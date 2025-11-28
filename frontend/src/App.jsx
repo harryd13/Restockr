@@ -3,6 +3,7 @@ import axios from "axios";
 import BranchRequests from "./pages/BranchRequests";
 import OpsPurchaseRun from "./pages/OpsPurchaseRun";
 import Insights from "./pages/Insights";
+import AdminMasterData from "./pages/AdminMasterData";
 import LoginScreen from "./components/LoginScreen";
 import TopNav from "./components/TopNav";
 import Modal from "./components/Modal";
@@ -96,12 +97,18 @@ function App() {
               Insights
             </button>
           )}
+          {user.role === "ADMIN" && (
+            <button className={`tab ${activeTab === "admin" ? "tab--active" : ""}`} onClick={() => setActiveTab("admin")}>
+              Master Data
+            </button>
+          )}
         </nav>
 
         <main style={{ marginTop: "1rem" }}>
           {user.role === "BRANCH" && activeTab === "branch" && <BranchRequests />}
           {(user.role === "OPS" || user.role === "ADMIN") && activeTab === "ops" && <OpsPurchaseRun />}
           {(user.role === "OPS" || user.role === "ADMIN") && activeTab === "insights" && <Insights />}
+          {user.role === "ADMIN" && activeTab === "admin" && <AdminMasterData />}
 
           {activeTab === "main" && (
             <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
