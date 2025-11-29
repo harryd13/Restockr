@@ -28,13 +28,20 @@ const COLLECTIONS = {
 };
 
 // --- Helpers ---
+function formatDateLocal(dateObj) {
+  const y = dateObj.getFullYear();
+  const m = String(dateObj.getMonth() + 1).padStart(2, "0");
+  const d = String(dateObj.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 function startOfWeek(date = new Date()) {
   const d = new Date(date);
   const day = d.getDay(); // 0 Sun..6 Sat
   const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Monday as first day
   const monday = new Date(d.setDate(diff));
   monday.setHours(0, 0, 0, 0);
-  return monday.toISOString().slice(0, 10);
+  return formatDateLocal(monday); // avoid UTC shift from toISOString
 }
 
 function authMiddleware(req, res, next) {
