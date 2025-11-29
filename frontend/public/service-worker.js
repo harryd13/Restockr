@@ -28,6 +28,11 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const { request } = event;
 
+  // Only handle GET; let POST/PUT/etc go straight to network to avoid cache errors.
+  if (request.method !== "GET") {
+    return;
+  }
+
   // Always hit network first for navigation (HTML) so new bundles are picked up.
   if (request.mode === "navigate") {
     event.respondWith(networkFirst(request));
