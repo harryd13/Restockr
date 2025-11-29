@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import axios from "axios";
 import BranchRequests from "./pages/BranchRequests";
 import OpsPurchaseRun from "./pages/OpsPurchaseRun";
@@ -18,6 +18,22 @@ function App() {
   const [activeTab, setActiveTab] = useState("main");
   const [loginError, setLoginError] = useState("");
 
+  useEffect(() => {
+    const stored = localStorage.getItem("foffee_auth");
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored);
+        if (parsed?.token && parsed?.user) {
+          setUser(parsed.user);
+          setToken(parsed.token);
+          axios.defaults.headers.common["Authorization"] = `Bearer ${parsed.token}`;
+        }
+      } catch (e) {
+        localStorage.removeItem("foffee_auth");
+      }
+    }
+  }, []);
+
   const handleLogin = async (e) => {
     e.preventDefault();
     const form = new FormData(e.target);
@@ -28,6 +44,7 @@ function App() {
       setUser(res.data.user);
       setToken(res.data.token);
       axios.defaults.headers.common["Authorization"] = `Bearer ${res.data.token}`;
+      localStorage.setItem("foffee_auth", JSON.stringify({ user: res.data.user, token: res.data.token }));
       setLoginError("");
     } catch (err) {
       setLoginError("Login failed. Please check your email and password.");
@@ -39,6 +56,7 @@ function App() {
     setUser(null);
     setToken("");
     delete axios.defaults.headers.common["Authorization"];
+    localStorage.removeItem("foffee_auth");
   };
 
   if (!user) {

@@ -33,6 +33,12 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
+  // Bypass caching for API calls to always hit the backend.
+  const url = new URL(request.url);
+  if (url.pathname.startsWith("/api/")) {
+    return;
+  }
+
   // Always hit network first for navigation (HTML) so new bundles are picked up.
   if (request.mode === "navigate") {
     event.respondWith(networkFirst(request));
