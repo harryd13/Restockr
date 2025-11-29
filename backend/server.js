@@ -36,12 +36,10 @@ function formatDateLocal(dateObj) {
 }
 
 function startOfWeek(date = new Date()) {
-  const d = new Date(date);
-  const day = d.getDay(); // 0 Sun..6 Sat
-  const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Monday as first day
-  const monday = new Date(d.setDate(diff));
-  monday.setHours(0, 0, 0, 0);
-  return formatDateLocal(monday); // avoid UTC shift from toISOString
+  // Use today's date as the displayed "week start" to keep UI current daily.
+  const today = new Date(date);
+  today.setHours(0, 0, 0, 0);
+  return formatDateLocal(today);
 }
 
 function authMiddleware(req, res, next) {
