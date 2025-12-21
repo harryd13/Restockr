@@ -226,7 +226,7 @@ app.get("/api/requests/history", authMiddleware, async (req, res) => {
   const itemsCol = db.collection(COLLECTIONS.WEEKLY_REQUEST_ITEMS);
 
   const list = await requestsCol
-    .find({ branchId })
+    .find({ branchId, status: { $ne: "DRAFT" } })
     .sort({ createdAt: -1, updatedAt: -1 })
     .toArray();
 
@@ -270,7 +270,8 @@ app.get("/api/purchase-run", authMiddleware, async (req, res) => {
   const relevantReqs = await requestsCol.find(reqFilter).toArray();
   const reqIds = relevantReqs.map((r) => r.id);
   const rows = reqIds.length ? await itemsCol.find({ requestId: { $in: reqIds } }).toArray() : [];
-  res.json({ weekStartDate: week, rows });
+  const requestIds = Array.from(new Set(rows.map((r) => r.requestId)));
+  res.json({ weekStartDate: week, rows, requestIds });
 });
 
 app.post("/api/purchase-run/:id/update-items", authMiddleware, async (req, res) => {
@@ -351,6 +352,72 @@ app.post("/api/purchase-run/:id/finalize", authMiddleware, async (req, res) => {
   await requestsCol.updateOne({ id }, { $set: { status: "PURCHASED", updatedAt: new Date().toISOString() } });
   const updated = await requestsCol.findOne({ id });
   res.json({ request: updated });
+});
+
+app.post("/api/purchase-run/finalize-multi", authMiddleware, async (req, res) => {
+  if (req.user.role !== "OPS" && req.user.role !== "ADMIN") {
+    return res.status(403).json({ message: "Ops/Admin role required" });
+  }
+  const { requestIds } = req.body;
+  if (!Array.isArray(requestIds) || requestIds.length === 0) {
+    return res.status(400).json({ message: "requestIds array is required" });
+  }
+
+  const requestsCol = db.collection(COLLECTIONS.WEEKLY_REQUESTS);
+  const itemsCol = db.collection(COLLECTIONS.WEEKLY_REQUEST_ITEMS);
+  const logsCol = db.collection(COLLECTIONS.PURCHASE_LOGS);
+
+  const reqObjs = await requestsCol.find({ id: { $in: requestIds } }).toArray();
+  if (!reqObjs.length) return res.status(404).json({ message: "Requests not found" });
+  const weekSet = new Set(reqObjs.map((r) => r.weekStartDate));
+  if (weekSet.size > 1) {
+    return res.status(400).json({ message: "All requests must belong to the same week" });
+  }
+  if (reqObjs.some((r) => r.status === "PURCHASED")) {
+    return res.status(400).json({ message: "Some requests are already finalized" });
+  }
+
+  const itemsForReqs = await itemsCol.find({ requestId: { $in: requestIds } }).toArray();
+  if (!itemsForReqs.length) {
+    return res.status(400).json({ message: "Cannot finalize empty purchase list" });
+  }
+
+  const branchMap = new Map();
+  let total = 0;
+  for (const row of itemsForReqs) {
+    total += row.totalPrice || 0;
+    if (!branchMap.has(row.branchId)) {
+      branchMap.set(row.branchId, { branchId: row.branchId, total: 0, items: [] });
+    }
+    const branchEntry = branchMap.get(row.branchId);
+    branchEntry.total += row.totalPrice || 0;
+    branchEntry.items.push({
+      itemId: row.itemId,
+      itemName: row.itemName,
+      categoryName: row.categoryName,
+      requestedQty: row.requestedQty,
+      approvedQty: row.approvedQty,
+      unitPrice: row.unitPrice,
+      totalPrice: row.totalPrice
+    });
+  }
+
+  const weekStartDate = reqObjs[0].weekStartDate;
+  await logsCol.insertOne({
+    id: uuidv4(),
+    requestIds,
+    weekStartDate,
+    createdAt: new Date().toISOString(),
+    total,
+    branches: Array.from(branchMap.values())
+  });
+
+  await requestsCol.updateMany(
+    { id: { $in: requestIds } },
+    { $set: { status: "PURCHASED", updatedAt: new Date().toISOString() } }
+  );
+
+  res.json({ ok: true, weekStartDate, total, requestIds });
 });
 
 // --- Reports ---

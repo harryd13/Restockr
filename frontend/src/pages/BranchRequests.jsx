@@ -9,10 +9,12 @@ function BranchRequests() {
   const [request, setRequest] = useState(null);
   const [requestItems, setRequestItems] = useState([]);
   const [history, setHistory] = useState([]);
+  const [historyPage, setHistoryPage] = useState(1);
   const [showSubmitModal, setShowSubmitModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const hasDraftItems = Object.values(quantities).some(qty => qty > 0);
+  const historyPageSize = 5;
 
   useEffect(() => {
     loadMaster();
@@ -85,9 +87,14 @@ function BranchRequests() {
   const loadHistory = async () => {
     const res = await axios.get("/api/requests/history");
     setHistory(res.data);
+    setHistoryPage(1);
   };
 
   const currentTotal = requestItems.reduce((sum, it) => sum + it.totalPrice, 0);
+  const sortedHistory = [...history].sort((a, b) => (b.weekStartDate || "").localeCompare(a.weekStartDate || ""));
+  const historyTotalPages = Math.max(1, Math.ceil(sortedHistory.length / historyPageSize));
+  const historyStartIndex = (historyPage - 1) * historyPageSize;
+  const pagedHistory = sortedHistory.slice(historyStartIndex, historyStartIndex + historyPageSize);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
@@ -199,7 +206,7 @@ function BranchRequests() {
               </tr>
             </thead>
             <tbody>
-              {history.map((h) => (
+              {pagedHistory.map((h) => (
                 <tr key={h.id}>
                   <td>{h.weekStartDate}</td>
                   <td>{h.status}</td>
@@ -208,6 +215,27 @@ function BranchRequests() {
               ))}
             </tbody>
           </table>
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: "0.75rem", marginTop: "0.75rem" }}>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => setHistoryPage((p) => Math.max(1, p - 1))}
+            disabled={historyPage === 1}
+          >
+            Prev
+          </button>
+          <span className="muted-text">
+            Page {historyPage} of {historyTotalPages}
+          </span>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => setHistoryPage((p) => Math.min(historyTotalPages, p + 1))}
+            disabled={historyPage === historyTotalPages}
+          >
+            Next
+          </button>
         </div>
       </section>
 

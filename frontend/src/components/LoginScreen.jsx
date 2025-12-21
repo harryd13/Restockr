@@ -1,7 +1,7 @@
 import React from "react";
 import TopNav from "./TopNav";
 
-function LoginScreen({ onLogin }) {
+function LoginScreen({ onLogin, isLoggingIn }) {
   const focusLoginForm = () => {
     const form = document.getElementById("login-form");
     if (form) {
@@ -82,6 +82,7 @@ function LoginScreen({ onLogin }) {
                   outline: "none",
                   transition: "border 0.2s"
                 }}
+                disabled={isLoggingIn}
                 required
               />
             </div>
@@ -98,11 +99,19 @@ function LoginScreen({ onLogin }) {
                   outline: "none",
                   transition: "border 0.2s"
                 }}
+                disabled={isLoggingIn}
                 required
               />
             </div>
-            <button type="submit" className="btn btn-primary" style={{ marginTop: "0.5rem" }}>
-              Continue
+            <button type="submit" className="btn btn-primary" style={{ marginTop: "0.5rem" }} disabled={isLoggingIn}>
+              {isLoggingIn ? (
+                <>
+                  <span className="spinner" aria-hidden="true" />
+                  Signing in...
+                </>
+              ) : (
+                "Continue"
+              )}
             </button>
           </form>
         </div>

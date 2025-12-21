@@ -17,6 +17,7 @@ function App() {
   const [token, setToken] = useState("");
   const [activeTab, setActiveTab] = useState("main");
   const [loginError, setLoginError] = useState("");
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   useEffect(() => {
     const stored = localStorage.getItem("foffee_auth");
@@ -36,6 +37,8 @@ function App() {
 
   const handleLogin = async (e) => {
     e.preventDefault();
+    setLoginError("");
+    setIsLoggingIn(true);
     const form = new FormData(e.target);
     const email = form.get("email");
     const password = form.get("password");
@@ -45,10 +48,11 @@ function App() {
       setToken(res.data.token);
       axios.defaults.headers.common["Authorization"] = `Bearer ${res.data.token}`;
       localStorage.setItem("foffee_auth", JSON.stringify({ user: res.data.user, token: res.data.token }));
-      setLoginError("");
     } catch (err) {
       setLoginError("Login failed. Please check your email and password.");
       console.error(err);
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
@@ -62,7 +66,7 @@ function App() {
   if (!user) {
     return (
       <>
-        <LoginScreen onLogin={handleLogin} />
+        <LoginScreen onLogin={handleLogin} isLoggingIn={isLoggingIn} />
         <Modal
           open={!!loginError}
           title="Could not sign in"

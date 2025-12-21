@@ -7,13 +7,14 @@ import Modal from "../components/Modal";
 function OpsPurchaseRun() {
   const [week, setWeek] = useState("");
   const [rows, setRows] = useState([]);
-  const [requestId, setRequestId] = useState(null);
+  const [requestIds, setRequestIds] = useState([]);
   const [branches, setBranches] = useState([]);
   const [selectedBranches, setSelectedBranches] = useState([]);
   const [combinedView, setCombinedView] = useState(false);
   const [sortConfig, setSortConfig] = useState({ column: "branchId", direction: "asc" });
   const [showFinalizeModal, setShowFinalizeModal] = useState(false);
   const [isFinalizing, setIsFinalizing] = useState(false);
+  const [successBanner, setSuccessBanner] = useState("");
 
   useEffect(() => {
     load();
@@ -30,7 +31,7 @@ function OpsPurchaseRun() {
     const res = await axios.get("/api/purchase-run", { params: { week: w } });
     setWeek(res.data.weekStartDate);
     setRows(res.data.rows);
-    setRequestId(res.data.rows.length > 0 ? res.data.rows[0].requestId : null);
+    setRequestIds(res.data.requestIds || []);
   };
 
   const changeRow = (id, field, value) => {
@@ -47,38 +48,49 @@ function OpsPurchaseRun() {
   };
 
   const saveUpdates = async () => {
-    if (!requestId) return;
-    const payloadItems = rows.map((r) => ({
-      id: r.id,
-      approvedQty: r.approvedQty,
-      unitPrice: r.unitPrice,
-      status: r.status
-    }));
-    const res = await axios.post(`/api/purchase-run/${requestId}/update-items`, { items: payloadItems });
-    setRows((prev) =>
-      prev.map((row) => {
+    if (!requestIds.length) return;
+    const grouped = rows.reduce((acc, row) => {
+      if (!acc[row.requestId]) acc[row.requestId] = [];
+      acc[row.requestId].push({
+        id: row.id,
+        approvedQty: row.approvedQty,
+        unitPrice: row.unitPrice,
+        status: row.status
+      });
+      return acc;
+    }, {});
+
+    let nextRows = [...rows];
+    for (const [reqId, items] of Object.entries(grouped)) {
+      const res = await axios.post(`/api/purchase-run/${reqId}/update-items`, { items });
+      nextRows = nextRows.map((row) => {
+        if (row.requestId !== reqId) return row;
         const updated = res.data.find((r) => r.id === row.id) || row;
         return { ...row, ...updated };
-      })
-    );
+      });
+    }
+    setRows(nextRows);
   };
 
   const finalize = async () => {
-    if (!requestId || selectedBranches.length !== branches.length || !rows.length) return;
+    const allBranchesSelected = branches.length > 0 && selectedBranches.length === branches.length;
+    if (!requestIds.length || !rows.length || !allBranchesSelected) return;
     try {
       setIsFinalizing(true);
       await saveUpdates();
-      await axios.post(`/api/purchase-run/${requestId}/finalize`);
+      await axios.post(`/api/purchase-run/finalize-multi`, { requestIds });
       setRows([]);
-      setRequestId(null);
+      setRequestIds([]);
       setShowFinalizeModal(false);
+      setSuccessBanner("Purchase run finalized and logged.");
+      setTimeout(() => setSuccessBanner(""), 3000);
     } finally {
       setIsFinalizing(false);
     }
   };
 
   const openFinalizeModal = () => {
-    if (!requestId || !canFinalize) return;
+    if (!canFinalize) return;
     setShowFinalizeModal(true);
   };
 
@@ -213,6 +225,11 @@ function OpsPurchaseRun() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+      {successBanner && (
+        <div className="banner banner--success">
+          <strong>Success:</strong> {successBanner}
+        </div>
+      )}
       <section className="section-card">
         <div style={{ display: "flex", flexWrap: "wrap", gap: "1rem", justifyContent: "space-between", alignItems: "center" }}>
           <div>
