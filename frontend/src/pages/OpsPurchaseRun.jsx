@@ -39,8 +39,13 @@ function OpsPurchaseRun() {
       prev.map((r) => {
         if (r.id !== id) return r;
         const updated = { ...r, [field]: value };
-        const qty = field === "approvedQty" ? value : r.approvedQty;
-        const price = field === "unitPrice" ? value : r.unitPrice;
+        if (field === "status" && value === "UNAVAILABLE") {
+          updated.approvedQty = 0;
+          updated.totalPrice = 0;
+          return updated;
+        }
+        const qty = field === "approvedQty" ? value : updated.approvedQty;
+        const price = field === "unitPrice" ? value : updated.unitPrice;
         updated.totalPrice = qty * price;
         return updated;
       })
@@ -321,7 +326,12 @@ function OpsPurchaseRun() {
                         value={r.approvedQty}
                         min={0}
                         onChange={(e) => changeRow(r.id, "approvedQty", Number(e.target.value))}
-                        style={{ width: "5rem" }}
+                        disabled={r.status === "UNAVAILABLE"}
+                        style={{
+                          width: "5rem",
+                          backgroundColor: r.status === "UNAVAILABLE" ? "#f1f5f9" : "#fff",
+                          color: r.status === "UNAVAILABLE" ? "#94a3b8" : "#0f172a"
+                        }}
                       />
                     ) : (
                       r.approvedQty

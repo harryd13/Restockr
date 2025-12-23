@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import axios from "axios";
 
 function BranchRequests() {
@@ -12,6 +12,7 @@ function BranchRequests() {
   const [historyPage, setHistoryPage] = useState(1);
   const [showSubmitModal, setShowSubmitModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const autosaveTimer = useRef(null);
 
   const hasDraftItems = Object.values(quantities).some(qty => qty > 0);
   const historyPageSize = 5;
@@ -90,6 +91,17 @@ function BranchRequests() {
     setHistoryPage(1);
   };
 
+  useEffect(() => {
+    if (!request || request.status !== "DRAFT") return;
+    if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
+    autosaveTimer.current = setTimeout(() => {
+      saveItems();
+    }, 500);
+    return () => {
+      if (autosaveTimer.current) clearTimeout(autosaveTimer.current);
+    };
+  }, [quantities, request]);
+
   const currentTotal = requestItems.reduce((sum, it) => sum + it.totalPrice, 0);
   const sortedHistory = [...history].sort((a, b) => (b.weekStartDate || "").localeCompare(a.weekStartDate || ""));
   const historyTotalPages = Math.max(1, Math.ceil(sortedHistory.length / historyPageSize));
@@ -130,14 +142,7 @@ function BranchRequests() {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
             <h4 className="section-title">2. Set Quantities</h4>
             {request && request.status === "DRAFT" && (
-              <div style={{ display: "flex", gap: "0.5rem" }}>
-                <button type="button" className="btn btn-secondary" onClick={saveItems}>
-                  Save Draft
-                </button>
-                <button type="button" className="btn btn-primary" onClick={() => setShowSubmitModal(true)} disabled={!hasDraftItems}>
-                  Submit
-                </button>
-              </div>
+              <span className="muted-text">Autosaving...</span>
             )}
           </div>
 
@@ -163,9 +168,16 @@ function BranchRequests() {
       <section className="section-card">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
           <h4 className="section-title">Current Week Summary</h4>
-          <span className="stats-pill">
-            Est. total <strong style={{ color: "#0f172a" }}>₹{currentTotal}</strong>
-          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+            <span className="stats-pill">
+              Est. total <strong style={{ color: "#0f172a" }}>₹{currentTotal}</strong>
+            </span>
+            {request && request.status === "DRAFT" && (
+              <button type="button" className="btn btn-primary" onClick={() => setShowSubmitModal(true)} disabled={!hasDraftItems}>
+                Submit
+              </button>
+            )}
+          </div>
         </div>
         <div className="table-wrapper">
           <table>
