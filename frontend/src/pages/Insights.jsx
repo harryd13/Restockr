@@ -5,14 +5,18 @@ function Insights() {
   const [branches, setBranches] = useState([]);
   const [purchaseLogs, setPurchaseLogs] = useState([]);
   const [combinedLogs, setCombinedLogs] = useState([]);
+  const [expenseLogs, setExpenseLogs] = useState([]);
   const [selectedSeries, setSelectedSeries] = useState("purchases");
   const [expandedLogId, setExpandedLogId] = useState(null);
   const [purchaseLogsPage, setPurchaseLogsPage] = useState(1);
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
 
   useEffect(() => {
     loadBranches();
     loadPurchaseLogs();
     loadCombinedLogs();
+    loadExpenseLogs();
   }, []);
 
   const loadBranches = async () => {
@@ -32,6 +36,11 @@ function Insights() {
     setCombinedLogs(res.data || []);
   };
 
+  const loadExpenseLogs = async () => {
+    const res = await axios.get("/api/tickets/expenses");
+    setExpenseLogs(res.data || []);
+  };
+
   const branchList = useMemo(() => branches.slice(0, 3), [branches]);
 
   const lastFourLogs = useMemo(() => {
@@ -48,6 +57,63 @@ function Insights() {
     });
     return map;
   }, [combinedLogs]);
+
+  useEffect(() => {
+    const dates = [];
+    purchaseLogs.forEach((log) => {
+      if (log.createdAt) dates.push(log.createdAt);
+    });
+    expenseLogs.forEach((log) => {
+      if (log.completedAt) dates.push(log.completedAt);
+    });
+    if (!dates.length) return;
+    const sorted = dates.map((d) => new Date(d)).sort((a, b) => a - b);
+    const minDate = sorted[0].toISOString().slice(0, 10);
+    const maxDate = sorted[sorted.length - 1].toISOString().slice(0, 10);
+    if (!startDate) setStartDate(minDate);
+    if (!endDate) setEndDate(maxDate);
+  }, [purchaseLogs, expenseLogs, startDate, endDate]);
+
+  const branchExpenseTotals = useMemo(() => {
+    const start = startDate ? new Date(startDate) : null;
+    const end = endDate ? new Date(endDate) : null;
+    if (end) end.setHours(23, 59, 59, 999);
+
+    const totals = new Map();
+    branchList.forEach((b) => totals.set(b.id, { distributed: 0, daily: 0 }));
+
+    purchaseLogs.forEach((log) => {
+      const date = log.createdAt ? new Date(log.createdAt) : null;
+      if (start && date && date < start) return;
+      if (end && date && date > end) return;
+      (log.branches || []).forEach((branch) => {
+        if (!totals.has(branch.branchId)) return;
+        const entry = totals.get(branch.branchId);
+        entry.distributed += Number(branch.total || 0);
+      });
+    });
+
+    expenseLogs.forEach((log) => {
+      const date = log.completedAt ? new Date(log.completedAt) : null;
+      if (start && date && date < start) return;
+      if (end && date && date > end) return;
+      if (!totals.has(log.branchId)) return;
+      const entry = totals.get(log.branchId);
+      entry.daily += Number(log.requestTotal || log.total || 0);
+    });
+
+    return totals;
+  }, [purchaseLogs, expenseLogs, branchList, startDate, endDate]);
+
+  const expenseGrandTotals = useMemo(() => {
+    let distributed = 0;
+    let daily = 0;
+    branchExpenseTotals.forEach((value) => {
+      distributed += value.distributed || 0;
+      daily += value.daily || 0;
+    });
+    return { distributed, daily };
+  }, [branchExpenseTotals]);
 
   const chartSeries = useMemo(() => {
     const seriesMap = new Map();
@@ -170,6 +236,60 @@ function Insights() {
             </div>
           ))}
           {chartSeries.length === 0 && <p className="muted-text">No data available for the selected series.</p>}
+        </div>
+      </section>
+
+      <section className="section-card">
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "1rem", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <h4 className="section-title">Branch Expenses</h4>
+            <p className="muted-text">Total distributed and daily ticket costs per branch.</p>
+          </div>
+          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+            <label style={{ fontSize: "0.85rem", color: "#475569", fontWeight: 600, alignSelf: "center" }}>Date range</label>
+            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+            <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+          </div>
+        </div>
+        <div className="table-wrapper" style={{ marginTop: "1rem" }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Metric</th>
+                {branchList.map((b) => (
+                  <th key={b.id}>{b.name}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Distributed Total</td>
+                {branchList.map((b) => (
+                  <td key={b.id}>Rs {Number(branchExpenseTotals.get(b.id)?.distributed || 0).toFixed(2)}</td>
+                ))}
+              </tr>
+              <tr>
+                <td>Daily Tickets Total</td>
+                {branchList.map((b) => (
+                  <td key={b.id}>Rs {Number(branchExpenseTotals.get(b.id)?.daily || 0).toFixed(2)}</td>
+                ))}
+              </tr>
+              <tr>
+                <td style={{ fontWeight: 600 }}>Grand Total</td>
+                {branchList.map((b) => (
+                  <td key={b.id} style={{ fontWeight: 600 }}>
+                    Rs {Number((branchExpenseTotals.get(b.id)?.distributed || 0) + (branchExpenseTotals.get(b.id)?.daily || 0)).toFixed(2)}
+                  </td>
+                ))}
+              </tr>
+              <tr>
+                <td style={{ fontWeight: 700 }}>Grand Total (All branches)</td>
+                <td style={{ fontWeight: 700 }} colSpan={branchList.length}>
+                  Rs {Number(expenseGrandTotals.distributed + expenseGrandTotals.daily).toFixed(2)}
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </section>
 

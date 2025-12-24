@@ -24,6 +24,8 @@ const COLLECTIONS = {
   ITEMS: "items",
   WEEKLY_REQUESTS: "weeklyRequests",
   WEEKLY_REQUEST_ITEMS: "weeklyRequestItems",
+  DAILY_REQUESTS: "dailyRequests",
+  DAILY_REQUEST_ITEMS: "dailyRequestItems",
   PURCHASE_LOGS: "purchaseLogs",
   CENTRAL_INVENTORY: "centralInventoryItems",
   COMBINED_PURCHASE_RUNS: "combinedPurchaseRuns",
@@ -31,7 +33,10 @@ const COLLECTIONS = {
   DISTRIBUTION_RUNS: "distributionRuns",
   DISTRIBUTION_ITEMS: "distributionItems",
   UNFULFILLED_LOGS: "unfulfilledLogs",
-  COMBINED_PURCHASE_LOGS: "combinedPurchaseLogs"
+  COMBINED_PURCHASE_LOGS: "combinedPurchaseLogs",
+  TICKETS: "tickets",
+  TICKET_ITEMS: "ticketItems",
+  EXPENSE_LOGS: "expenseLogs"
 };
 
 // --- Helpers ---
@@ -204,6 +209,8 @@ async function ensureIndexes() {
   await db.collection(COLLECTIONS.ITEMS).createIndex({ categoryId: 1 });
   await db.collection(COLLECTIONS.WEEKLY_REQUESTS).createIndex({ branchId: 1, weekStartDate: 1, status: 1 });
   await db.collection(COLLECTIONS.WEEKLY_REQUEST_ITEMS).createIndex({ requestId: 1 });
+  await db.collection(COLLECTIONS.DAILY_REQUESTS).createIndex({ branchId: 1, requestDate: 1, status: 1 });
+  await db.collection(COLLECTIONS.DAILY_REQUEST_ITEMS).createIndex({ requestId: 1 });
   await db.collection(COLLECTIONS.PURCHASE_LOGS).createIndex({ createdAt: -1 });
   try {
     await db.collection(COLLECTIONS.DISTRIBUTION_RUNS).dropIndex("weekStartDate_1");
@@ -222,6 +229,9 @@ async function ensureIndexes() {
   await db.collection(COLLECTIONS.DISTRIBUTION_ITEMS).createIndex({ runId: 1 });
   await db.collection(COLLECTIONS.UNFULFILLED_LOGS).createIndex({ weekStartDate: 1 });
   await db.collection(COLLECTIONS.COMBINED_PURCHASE_LOGS).createIndex({ createdAt: -1 });
+  await db.collection(COLLECTIONS.TICKETS).createIndex({ status: 1, createdAt: -1 });
+  await db.collection(COLLECTIONS.TICKET_ITEMS).createIndex({ ticketId: 1 });
+  await db.collection(COLLECTIONS.EXPENSE_LOGS).createIndex({ createdAt: -1 });
 }
 
 // --- Auth ---
@@ -368,6 +378,321 @@ app.post("/api/requests/:id/submit", authMiddleware, async (req, res) => {
   const updated = await requestsCol.findOne({ id });
   await createCombinedPurchaseRunForRequest(updated.id);
   res.json({ request: updated });
+});
+
+// --- Daily Requests ---
+app.get("/api/daily-requests/current", authMiddleware, async (req, res) => {
+  if (req.user.role !== "BRANCH") {
+    return res.status(403).json({ message: "Branch role required" });
+  }
+  const branchId = req.user.branchId;
+  const requestDate = formatDateLocal(new Date());
+  const requestsCol = db.collection(COLLECTIONS.DAILY_REQUESTS);
+  const itemsCol = db.collection(COLLECTIONS.DAILY_REQUEST_ITEMS);
+
+  let reqObj = await requestsCol.findOne({ branchId, requestDate, status: "DRAFT" });
+  if (!reqObj) {
+    reqObj = {
+      id: uuidv4(),
+      branchId,
+      requestDate,
+      status: "DRAFT",
+      createdBy: req.user.id,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    await requestsCol.insertOne(reqObj);
+  }
+  const items = await itemsCol.find({ requestId: reqObj.id }).toArray();
+  res.json({ request: reqObj, items });
+});
+
+app.post("/api/daily-requests/:id/items", authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const { items: bodyItems } = req.body; // [{ itemId, requestedQty }]
+  const requestsCol = db.collection(COLLECTIONS.DAILY_REQUESTS);
+  const itemsCol = db.collection(COLLECTIONS.DAILY_REQUEST_ITEMS);
+  const masterItemsCol = db.collection(COLLECTIONS.ITEMS);
+  const categoriesCol = db.collection(COLLECTIONS.CATEGORIES);
+
+  const reqObj = await requestsCol.findOne({ id });
+  if (!reqObj) return res.status(404).json({ message: "Request not found" });
+  if (req.user.role !== "BRANCH" || req.user.branchId !== reqObj.branchId) {
+    return res.status(403).json({ message: "Not allowed" });
+  }
+  if (reqObj.status !== "DRAFT") {
+    return res.status(400).json({ message: "Cannot edit non-draft request" });
+  }
+
+  await itemsCol.deleteMany({ requestId: id });
+
+  const itemIds = (bodyItems || []).filter((bi) => bi.requestedQty > 0).map((bi) => bi.itemId);
+  const itemDocs = await masterItemsCol.find({ id: { $in: itemIds } }).toArray();
+  const categoryDocs = await categoriesCol.find({}).toArray();
+  const categoryMap = new Map(categoryDocs.map((c) => [c.id, c]));
+
+  const newItems = [];
+  for (const bi of bodyItems || []) {
+    if (bi.requestedQty <= 0) continue;
+    const item = itemDocs.find((it) => it.id === bi.itemId);
+    if (!item) continue;
+    const cat = categoryMap.get(item.categoryId);
+    const unitPrice = item.defaultPrice || 0;
+    newItems.push({
+      id: uuidv4(),
+      requestId: id,
+      branchId: reqObj.branchId,
+      itemId: item.id,
+      itemName: item.name,
+      categoryName: cat ? cat.name : "",
+      requestedQty: bi.requestedQty,
+      unitPrice
+    });
+  }
+
+  if (newItems.length) {
+    await itemsCol.insertMany(newItems);
+  }
+  await requestsCol.updateOne({ id }, { $set: { updatedAt: new Date().toISOString() } });
+  const itemsForReq = await itemsCol.find({ requestId: id }).toArray();
+  res.json({ request: reqObj, items: itemsForReq });
+});
+
+app.post("/api/daily-requests/:id/submit", authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const requestsCol = db.collection(COLLECTIONS.DAILY_REQUESTS);
+  const itemsCol = db.collection(COLLECTIONS.DAILY_REQUEST_ITEMS);
+  const ticketsCol = db.collection(COLLECTIONS.TICKETS);
+  const ticketItemsCol = db.collection(COLLECTIONS.TICKET_ITEMS);
+
+  const reqObj = await requestsCol.findOne({ id });
+  if (!reqObj) return res.status(404).json({ message: "Request not found" });
+  if (req.user.role !== "BRANCH" || req.user.branchId !== reqObj.branchId) {
+    return res.status(403).json({ message: "Not allowed" });
+  }
+  if (reqObj.status !== "DRAFT") {
+    return res.status(400).json({ message: "Only draft can be submitted" });
+  }
+
+  const items = await itemsCol.find({ requestId: id }).toArray();
+  if (!items.length) {
+    return res.status(400).json({ message: "Cannot submit an empty request" });
+  }
+
+  await requestsCol.updateOne(
+    { id },
+    { $set: { status: "SUBMITTED", updatedAt: new Date().toISOString() } }
+  );
+
+  const ticket = {
+    id: uuidv4(),
+    requestId: id,
+    branchId: reqObj.branchId,
+    requestDate: reqObj.requestDate,
+    status: "OPEN",
+    assignee: "",
+    paymentMethod: "",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  await ticketsCol.insertOne(ticket);
+
+  const ticketItems = items.map((it) => ({
+    id: uuidv4(),
+    ticketId: ticket.id,
+    itemId: it.itemId,
+    itemName: it.itemName,
+    categoryName: it.categoryName,
+    requestedQty: it.requestedQty,
+    approvedQty: it.requestedQty,
+    unitPrice: it.unitPrice || 0,
+    fromStock: false
+  }));
+  await ticketItemsCol.insertMany(ticketItems);
+
+  const updated = await requestsCol.findOne({ id });
+  res.json({ request: updated });
+});
+
+// --- Tickets / Expenses ---
+app.get("/api/tickets", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  const status = req.query.status || "OPEN";
+  const ticketsCol = db.collection(COLLECTIONS.TICKETS);
+  const itemsCol = db.collection(COLLECTIONS.TICKET_ITEMS);
+  const tickets = await ticketsCol.find({ status }).sort({ createdAt: -1 }).toArray();
+  const ticketIds = tickets.map((t) => t.id);
+  const items = ticketIds.length ? await itemsCol.find({ ticketId: { $in: ticketIds } }).toArray() : [];
+  res.json({ tickets, items });
+});
+
+app.post("/api/tickets/:id/done", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  const { id } = req.params;
+  const { assignee, paymentMethod, items } = req.body;
+  const ticketsCol = db.collection(COLLECTIONS.TICKETS);
+  const itemsCol = db.collection(COLLECTIONS.TICKET_ITEMS);
+  const logsCol = db.collection(COLLECTIONS.EXPENSE_LOGS);
+
+  const ticket = await ticketsCol.findOne({ id });
+  if (!ticket) return res.status(404).json({ message: "Ticket not found" });
+  if (ticket.status !== "OPEN") return res.status(400).json({ message: "Ticket already closed" });
+  if (!paymentMethod) return res.status(400).json({ message: "Payment method is required" });
+
+  for (const row of items || []) {
+    const update = {};
+    if (typeof row.approvedQty === "number") update.approvedQty = row.approvedQty;
+    if (typeof row.unitPrice === "number") update.unitPrice = row.unitPrice;
+    if (typeof row.fromStock === "boolean") update.fromStock = row.fromStock;
+    if (Object.keys(update).length) {
+      await itemsCol.updateOne({ id: row.id, ticketId: id }, { $set: update });
+    }
+  }
+
+  const updatedItems = await itemsCol.find({ ticketId: id }).toArray();
+  const inventoryMap = await getCentralInventoryMap(updatedItems.map((row) => row.itemId));
+  for (const row of updatedItems) {
+    if (row.fromStock) {
+      const approvedQty = Number(row.approvedQty || 0);
+      const onHand = inventoryMap.get(row.itemId) || 0;
+      if (approvedQty > onHand) {
+        return res.status(400).json({ message: "From stock quantity exceeds central inventory" });
+      }
+      if (approvedQty > 0) {
+        await upsertCentralInventory(row.itemId, -approvedQty);
+      }
+    }
+  }
+
+  const total = updatedItems.reduce((sum, row) => {
+    if (row.fromStock) return sum;
+    return sum + (row.approvedQty || 0) * (row.unitPrice || 0);
+  }, 0);
+  const requestTotal = updatedItems.reduce((sum, row) => sum + (row.approvedQty || 0) * (row.unitPrice || 0), 0);
+  await logsCol.insertOne({
+    id: uuidv4(),
+    ticketId: id,
+    branchId: ticket.branchId,
+    requestDate: ticket.requestDate,
+    assignee: assignee || ticket.assignee || "",
+    paymentMethod: paymentMethod || ticket.paymentMethod || "",
+    createdAt: ticket.createdAt,
+    completedAt: new Date().toISOString(),
+    total,
+    requestTotal,
+    items: updatedItems
+  });
+
+  await ticketsCol.updateOne(
+    { id },
+    { $set: { status: "DONE", assignee: assignee || "", paymentMethod: paymentMethod || "", updatedAt: new Date().toISOString(), completedAt: new Date().toISOString() } }
+  );
+
+  res.json({ ok: true });
+});
+
+app.post("/api/tickets/:id/partial", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  const { id } = req.params;
+  const { assignee, paymentMethod, items } = req.body;
+  const ticketsCol = db.collection(COLLECTIONS.TICKETS);
+  const itemsCol = db.collection(COLLECTIONS.TICKET_ITEMS);
+  const logsCol = db.collection(COLLECTIONS.EXPENSE_LOGS);
+
+  const ticket = await ticketsCol.findOne({ id });
+  if (!ticket) return res.status(404).json({ message: "Ticket not found" });
+  if (ticket.status !== "OPEN") return res.status(400).json({ message: "Ticket already closed" });
+  if (!paymentMethod) return res.status(400).json({ message: "Payment method is required" });
+
+  for (const row of items || []) {
+    const update = {};
+    if (typeof row.approvedQty === "number") update.approvedQty = row.approvedQty;
+    if (typeof row.unitPrice === "number") update.unitPrice = row.unitPrice;
+    if (typeof row.fromStock === "boolean") update.fromStock = row.fromStock;
+    if (Object.keys(update).length) {
+      await itemsCol.updateOne({ id: row.id, ticketId: id }, { $set: update });
+    }
+  }
+
+  const updatedItems = await itemsCol.find({ ticketId: id }).toArray();
+  const completedItems = updatedItems.filter((row) => (row.approvedQty || 0) > 0);
+  const remainingItems = updatedItems
+    .map((row) => ({
+      ...row,
+      remainingQty: Math.max(0, (row.requestedQty || 0) - (row.approvedQty || 0))
+    }))
+    .filter((row) => row.remainingQty > 0);
+
+  if (!completedItems.length) {
+    return res.status(400).json({ message: "No approved items to submit" });
+  }
+
+  const inventoryMap = await getCentralInventoryMap(completedItems.map((row) => row.itemId));
+  for (const row of completedItems) {
+    if (row.fromStock) {
+      const approvedQty = Number(row.approvedQty || 0);
+      const onHand = inventoryMap.get(row.itemId) || 0;
+      if (approvedQty > onHand) {
+        return res.status(400).json({ message: "From stock quantity exceeds central inventory" });
+      }
+      if (approvedQty > 0) {
+        await upsertCentralInventory(row.itemId, -approvedQty);
+      }
+    }
+  }
+
+  const total = completedItems.reduce((sum, row) => {
+    if (row.fromStock) return sum;
+    return sum + (row.approvedQty || 0) * (row.unitPrice || 0);
+  }, 0);
+  const requestTotal = completedItems.reduce((sum, row) => sum + (row.approvedQty || 0) * (row.unitPrice || 0), 0);
+
+  await logsCol.insertOne({
+    id: uuidv4(),
+    ticketId: id,
+    branchId: ticket.branchId,
+    requestDate: ticket.requestDate,
+    assignee: assignee || ticket.assignee || "",
+    paymentMethod: paymentMethod || ticket.paymentMethod || "",
+    createdAt: ticket.createdAt,
+    completedAt: new Date().toISOString(),
+    total,
+    requestTotal,
+    items: completedItems
+  });
+
+  if (remainingItems.length) {
+    await itemsCol.deleteMany({ ticketId: id });
+    const resetRemaining = remainingItems.map((row) => ({
+      id: uuidv4(),
+      ticketId: id,
+      itemId: row.itemId,
+      itemName: row.itemName,
+      categoryName: row.categoryName,
+      requestedQty: row.remainingQty,
+      approvedQty: 0,
+      unitPrice: row.unitPrice || 0,
+      fromStock: false
+    }));
+    await itemsCol.insertMany(resetRemaining);
+    await ticketsCol.updateOne(
+      { id },
+      { $set: { assignee: assignee || "", paymentMethod: paymentMethod || "", updatedAt: new Date().toISOString() } }
+    );
+  } else {
+    await ticketsCol.updateOne(
+      { id },
+      { $set: { status: "DONE", assignee: assignee || "", paymentMethod: paymentMethod || "", updatedAt: new Date().toISOString(), completedAt: new Date().toISOString() } }
+    );
+  }
+
+  res.json({ ok: true, remaining: remainingItems.length });
+});
+
+app.get("/api/tickets/expenses", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  const logs = await db.collection(COLLECTIONS.EXPENSE_LOGS).find({}).sort({ completedAt: -1 }).toArray();
+  res.json(logs);
 });
 
 app.get("/api/requests/history", authMiddleware, async (req, res) => {
