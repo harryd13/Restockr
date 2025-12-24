@@ -26,6 +26,8 @@ const COLLECTIONS = {
   WEEKLY_REQUEST_ITEMS: "weeklyRequestItems",
   DAILY_REQUESTS: "dailyRequests",
   DAILY_REQUEST_ITEMS: "dailyRequestItems",
+  MISC_REQUESTS: "miscRequests",
+  MISC_REQUEST_ITEMS: "miscRequestItems",
   PURCHASE_LOGS: "purchaseLogs",
   CENTRAL_INVENTORY: "centralInventoryItems",
   COMBINED_PURCHASE_RUNS: "combinedPurchaseRuns",
@@ -211,6 +213,8 @@ async function ensureIndexes() {
   await db.collection(COLLECTIONS.WEEKLY_REQUEST_ITEMS).createIndex({ requestId: 1 });
   await db.collection(COLLECTIONS.DAILY_REQUESTS).createIndex({ branchId: 1, requestDate: 1, status: 1 });
   await db.collection(COLLECTIONS.DAILY_REQUEST_ITEMS).createIndex({ requestId: 1 });
+  await db.collection(COLLECTIONS.MISC_REQUESTS).createIndex({ branchId: 1, createdAt: -1 });
+  await db.collection(COLLECTIONS.MISC_REQUEST_ITEMS).createIndex({ requestId: 1 });
   await db.collection(COLLECTIONS.PURCHASE_LOGS).createIndex({ createdAt: -1 });
   try {
     await db.collection(COLLECTIONS.DISTRIBUTION_RUNS).dropIndex("weekStartDate_1");
@@ -490,6 +494,7 @@ app.post("/api/daily-requests/:id/submit", authMiddleware, async (req, res) => {
     branchId: reqObj.branchId,
     requestDate: reqObj.requestDate,
     status: "OPEN",
+    type: "DAILY",
     assignee: "",
     paymentMethod: "",
     createdAt: new Date().toISOString(),
@@ -512,6 +517,85 @@ app.post("/api/daily-requests/:id/submit", authMiddleware, async (req, res) => {
 
   const updated = await requestsCol.findOne({ id });
   res.json({ request: updated });
+});
+
+// --- Misc Requests ---
+app.post("/api/misc-requests/submit", authMiddleware, async (req, res) => {
+  if (req.user.role !== "BRANCH") {
+    return res.status(403).json({ message: "Branch role required" });
+  }
+  const { items } = req.body;
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ message: "Items are required" });
+  }
+
+  const requestsCol = db.collection(COLLECTIONS.MISC_REQUESTS);
+  const itemsCol = db.collection(COLLECTIONS.MISC_REQUEST_ITEMS);
+  const ticketsCol = db.collection(COLLECTIONS.TICKETS);
+  const ticketItemsCol = db.collection(COLLECTIONS.TICKET_ITEMS);
+
+  const requestId = uuidv4();
+  const requestDate = formatDateLocal(new Date());
+  const reqDoc = {
+    id: requestId,
+    branchId: req.user.branchId,
+    requestDate,
+    createdBy: req.user.id,
+    createdAt: new Date().toISOString()
+  };
+  await requestsCol.insertOne(reqDoc);
+
+  const cleanedItems = items
+    .map((it) => ({
+      itemName: String(it.itemName || "").trim(),
+      requestedQty: Number(it.requestedQty || 0),
+      reason: String(it.reason || "").trim()
+    }))
+    .filter((it) => it.itemName && it.requestedQty > 0);
+
+  if (!cleanedItems.length) {
+    return res.status(400).json({ message: "Valid items are required" });
+  }
+
+  const reqItems = cleanedItems.map((it) => ({
+    id: uuidv4(),
+    requestId,
+    branchId: req.user.branchId,
+    itemName: it.itemName,
+    requestedQty: it.requestedQty,
+    reason: it.reason || ""
+  }));
+  await itemsCol.insertMany(reqItems);
+
+  const ticket = {
+    id: uuidv4(),
+    requestId,
+    branchId: req.user.branchId,
+    requestDate,
+    status: "OPEN",
+    type: "OTHER",
+    assignee: "",
+    paymentMethod: "",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  await ticketsCol.insertOne(ticket);
+
+  const ticketItems = reqItems.map((it) => ({
+    id: uuidv4(),
+    ticketId: ticket.id,
+    itemId: uuidv4(),
+    itemName: it.itemName,
+    categoryName: "",
+    requestedQty: it.requestedQty,
+    approvedQty: it.requestedQty,
+    unitPrice: 0,
+    fromStock: false,
+    reason: it.reason || ""
+  }));
+  await ticketItemsCol.insertMany(ticketItems);
+
+  res.status(201).json({ ok: true, requestId });
 });
 
 // --- Tickets / Expenses ---
@@ -573,6 +657,7 @@ app.post("/api/tickets/:id/done", authMiddleware, async (req, res) => {
     id: uuidv4(),
     ticketId: id,
     branchId: ticket.branchId,
+    type: ticket.type || "DAILY",
     requestDate: ticket.requestDate,
     assignee: assignee || ticket.assignee || "",
     paymentMethod: paymentMethod || ticket.paymentMethod || "",
@@ -651,6 +736,7 @@ app.post("/api/tickets/:id/partial", authMiddleware, async (req, res) => {
     id: uuidv4(),
     ticketId: id,
     branchId: ticket.branchId,
+    type: ticket.type || "DAILY",
     requestDate: ticket.requestDate,
     assignee: assignee || ticket.assignee || "",
     paymentMethod: paymentMethod || ticket.paymentMethod || "",

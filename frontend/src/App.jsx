@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import axios from "axios";
 import BranchRequests from "./pages/BranchRequests";
 import DailyRequests from "./pages/DailyRequests";
+import OtherRequests from "./pages/OtherRequests";
 import OpsPurchaseRun from "./pages/OpsPurchaseRun";
 import CombinedPurchaseRun from "./pages/CombinedPurchaseRun";
 import DistributionRun from "./pages/DistributionRun";
@@ -158,6 +159,11 @@ function App() {
               Daily Requests
             </button>
           )}
+          {user.role === "BRANCH" && (
+            <button className={`tab ${activeTab === "other" ? "tab--active" : ""}`} onClick={() => setActiveTab("other")}>
+              Others
+            </button>
+          )}
           {user.role === "OPS" && (
             <button className={`tab ${activeTab === "ops" ? "tab--active" : ""}`} onClick={() => setActiveTab("ops")}>
               Purchase Run
@@ -198,6 +204,7 @@ function App() {
         <main style={{ marginTop: "1rem" }}>
           {user.role === "BRANCH" && activeTab === "branch" && <BranchRequests />}
           {user.role === "BRANCH" && activeTab === "daily" && <DailyRequests />}
+          {user.role === "BRANCH" && activeTab === "other" && <OtherRequests />}
           {user.role === "OPS" && activeTab === "ops" && <OpsPurchaseRun />}
           {user.role === "ADMIN" && activeTab === "combined" && <CombinedPurchaseRun onNavigate={setActiveTab} />}
           {user.role === "ADMIN" && activeTab === "distribution" && <DistributionRun />}
@@ -210,6 +217,7 @@ function App() {
             <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
               {user.role === "BRANCH" && <BranchRequests />}
               {user.role === "BRANCH" && <DailyRequests />}
+              {user.role === "BRANCH" && <OtherRequests />}
               {user.role === "OPS" && <OpsPurchaseRun />}
               {user.role === "ADMIN" && <CombinedPurchaseRun onNavigate={setActiveTab} />}
             </div>

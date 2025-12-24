@@ -231,6 +231,7 @@ function Tickets() {
               <div className="muted-text">
                 Assignee: {ticket.assignee || "Unassigned"}
                 {ticketHasRemaining(ticket) && <span className="stats-pill" style={{ marginLeft: "0.5rem" }}>Partial</span>}
+                {ticket.type === "OTHER" && <span className="stats-pill" style={{ marginLeft: "0.5rem" }}>Other</span>}
               </div>
               <button className="btn btn-primary" type="button" onClick={() => openTicket(ticket)}>
                 More

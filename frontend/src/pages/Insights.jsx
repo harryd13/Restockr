@@ -80,7 +80,7 @@ function Insights() {
     if (end) end.setHours(23, 59, 59, 999);
 
     const totals = new Map();
-    branchList.forEach((b) => totals.set(b.id, { distributed: 0, daily: 0 }));
+    branchList.forEach((b) => totals.set(b.id, { distributed: 0, daily: 0, other: 0 }));
 
     purchaseLogs.forEach((log) => {
       const date = log.createdAt ? new Date(log.createdAt) : null;
@@ -99,7 +99,11 @@ function Insights() {
       if (end && date && date > end) return;
       if (!totals.has(log.branchId)) return;
       const entry = totals.get(log.branchId);
-      entry.daily += Number(log.requestTotal || log.total || 0);
+      if ((log.type || "DAILY") === "OTHER") {
+        entry.other += Number(log.requestTotal || log.total || 0);
+      } else {
+        entry.daily += Number(log.requestTotal || log.total || 0);
+      }
     });
 
     return totals;
@@ -108,11 +112,13 @@ function Insights() {
   const expenseGrandTotals = useMemo(() => {
     let distributed = 0;
     let daily = 0;
+    let other = 0;
     branchExpenseTotals.forEach((value) => {
       distributed += value.distributed || 0;
       daily += value.daily || 0;
+      other += value.other || 0;
     });
-    return { distributed, daily };
+    return { distributed, daily, other };
   }, [branchExpenseTotals]);
 
   const chartSeries = useMemo(() => {
@@ -275,17 +281,23 @@ function Insights() {
                 ))}
               </tr>
               <tr>
+                <td>Other Tickets Total</td>
+                {branchList.map((b) => (
+                  <td key={b.id}>Rs {Number(branchExpenseTotals.get(b.id)?.other || 0).toFixed(2)}</td>
+                ))}
+              </tr>
+              <tr>
                 <td style={{ fontWeight: 600 }}>Grand Total</td>
                 {branchList.map((b) => (
                   <td key={b.id} style={{ fontWeight: 600 }}>
-                    Rs {Number((branchExpenseTotals.get(b.id)?.distributed || 0) + (branchExpenseTotals.get(b.id)?.daily || 0)).toFixed(2)}
+                    Rs {Number((branchExpenseTotals.get(b.id)?.distributed || 0) + (branchExpenseTotals.get(b.id)?.daily || 0) + (branchExpenseTotals.get(b.id)?.other || 0)).toFixed(2)}
                   </td>
                 ))}
               </tr>
               <tr>
                 <td style={{ fontWeight: 700 }}>Grand Total (All branches)</td>
                 <td style={{ fontWeight: 700 }} colSpan={branchList.length}>
-                  Rs {Number(expenseGrandTotals.distributed + expenseGrandTotals.daily).toFixed(2)}
+                  Rs {Number(expenseGrandTotals.distributed + expenseGrandTotals.daily + expenseGrandTotals.other).toFixed(2)}
                 </td>
               </tr>
             </tbody>
