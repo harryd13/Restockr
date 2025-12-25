@@ -13,7 +13,7 @@ const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || "foffee_inventory_secret";
 
 app.use(cors());
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: "8mb" }));
 
 let db;
 
@@ -38,7 +38,9 @@ const COLLECTIONS = {
   COMBINED_PURCHASE_LOGS: "combinedPurchaseLogs",
   TICKETS: "tickets",
   TICKET_ITEMS: "ticketItems",
-  EXPENSE_LOGS: "expenseLogs"
+  EXPENSE_LOGS: "expenseLogs",
+  EXPENSE_TICKETS: "expenseTickets",
+  EXPENSE_TICKET_LOGS: "expenseTicketLogs"
 };
 
 // --- Helpers ---
@@ -236,6 +238,8 @@ async function ensureIndexes() {
   await db.collection(COLLECTIONS.TICKETS).createIndex({ status: 1, createdAt: -1 });
   await db.collection(COLLECTIONS.TICKET_ITEMS).createIndex({ ticketId: 1 });
   await db.collection(COLLECTIONS.EXPENSE_LOGS).createIndex({ createdAt: -1 });
+  await db.collection(COLLECTIONS.EXPENSE_TICKETS).createIndex({ createdAt: -1 });
+  await db.collection(COLLECTIONS.EXPENSE_TICKET_LOGS).createIndex({ createdAt: -1 });
 }
 
 // --- Auth ---
@@ -778,6 +782,187 @@ app.post("/api/tickets/:id/partial", authMiddleware, async (req, res) => {
 app.get("/api/tickets/expenses", authMiddleware, async (req, res) => {
   if (!ensureAdmin(req, res)) return;
   const logs = await db.collection(COLLECTIONS.EXPENSE_LOGS).find({}).sort({ completedAt: -1 }).toArray();
+  res.json(logs);
+});
+
+// --- Expense Tickets ---
+app.post("/api/expense-tickets", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  const {
+    category,
+    branchId,
+    assignee,
+    paymentMethod,
+    amount,
+    date,
+    attachmentName,
+    attachmentType,
+    attachmentData,
+    items,
+    employeeName,
+    source,
+    note
+  } = req.body;
+
+  const normalizedCategory = String(category || "").trim();
+  const normalizedBranchId = String(branchId || "").trim();
+  const normalizedAssignee = String(assignee || "").trim();
+  const normalizedPayment = String(paymentMethod || "").trim();
+  const normalizedDate = String(date || "").trim();
+  const normalizedAmount = Number(amount || 0);
+
+  if (!normalizedCategory) return res.status(400).json({ message: "Category is required" });
+  if (!normalizedBranchId) return res.status(400).json({ message: "Branch is required" });
+  if (!normalizedAssignee) return res.status(400).json({ message: "Assignee is required" });
+  if (!normalizedPayment) return res.status(400).json({ message: "Payment method is required" });
+  if (!normalizedDate) return res.status(400).json({ message: "Date is required" });
+  if (normalizedAmount <= 0) return res.status(400).json({ message: "Amount must be greater than zero" });
+
+  if (normalizedCategory === "Salary" && !String(employeeName || "").trim()) {
+    return res.status(400).json({ message: "Employee name is required for Salary" });
+  }
+  if (normalizedCategory === "Food Expense" && !String(source || "").trim()) {
+    return res.status(400).json({ message: "Source is required for Food Expense" });
+  }
+
+  const ticketsCol = db.collection(COLLECTIONS.EXPENSE_TICKETS);
+  const logsCol = db.collection(COLLECTIONS.EXPENSE_TICKET_LOGS);
+  const cleanedItems = Array.isArray(items)
+    ? items
+        .map((row) => ({
+          name: String(row.name || "").trim(),
+          qty: Number(row.qty || 0)
+        }))
+        .filter((row) => row.name && row.qty > 0)
+    : [];
+  const ticket = {
+    id: uuidv4(),
+    category: normalizedCategory,
+    branchId: normalizedBranchId,
+    assignee: normalizedAssignee,
+    paymentMethod: normalizedPayment,
+    amount: normalizedAmount,
+    date: normalizedDate,
+    attachmentName: String(attachmentName || "").trim(),
+    attachmentType: String(attachmentType || "").trim(),
+    attachmentData: String(attachmentData || ""),
+    items: cleanedItems,
+    employeeName: String(employeeName || "").trim(),
+    source: String(source || "").trim(),
+    note: String(note || "").trim(),
+    status: "LOGGED",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  await ticketsCol.insertOne(ticket);
+
+  await logsCol.insertOne({
+    id: uuidv4(),
+    ticketId: ticket.id,
+    branchId: ticket.branchId,
+    category: ticket.category,
+    assignee: ticket.assignee,
+    paymentMethod: ticket.paymentMethod,
+    amount: ticket.amount,
+    date: ticket.date,
+    attachmentName: ticket.attachmentName,
+    attachmentType: ticket.attachmentType,
+    attachmentData: ticket.attachmentData,
+    items: ticket.items || [],
+    employeeName: ticket.employeeName,
+    source: ticket.source,
+    note: ticket.note,
+    status: ticket.status,
+    createdAt: ticket.createdAt
+  });
+
+  res.status(201).json({ ok: true, ticketId: ticket.id });
+});
+
+app.post("/api/expense-tickets/branch", authMiddleware, async (req, res) => {
+  if (req.user?.role !== "BRANCH") {
+    return res.status(403).json({ message: "Branch role required" });
+  }
+  const { items, paymentMethod, amount, date } = req.body;
+  const normalizedPayment = String(paymentMethod || "").trim();
+  const normalizedDate = String(date || "").trim();
+  const normalizedAmount = Number(amount || 0);
+  const cleanedItems = Array.isArray(items)
+    ? items
+        .map((row) => ({
+          name: String(row.name || "").trim(),
+          qty: Number(row.qty || 0)
+        }))
+        .filter((row) => row.name && row.qty > 0)
+    : [];
+
+  if (!cleanedItems.length) return res.status(400).json({ message: "At least one item is required" });
+  if (!normalizedPayment) return res.status(400).json({ message: "Payment method is required" });
+  if (!normalizedDate) return res.status(400).json({ message: "Date is required" });
+  if (normalizedAmount <= 0) return res.status(400).json({ message: "Amount must be greater than zero" });
+
+  const ticketsCol = db.collection(COLLECTIONS.EXPENSE_TICKETS);
+  const logsCol = db.collection(COLLECTIONS.EXPENSE_TICKET_LOGS);
+  const ticket = {
+    id: uuidv4(),
+    category: "Branch Expense",
+    branchId: req.user.branchId,
+    assignee: "",
+    paymentMethod: normalizedPayment,
+    amount: normalizedAmount,
+    date: normalizedDate,
+    attachmentName: "",
+    attachmentType: "",
+    attachmentData: "",
+    items: cleanedItems,
+    employeeName: "",
+    source: "",
+    note: "",
+    status: "LOGGED",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  await ticketsCol.insertOne(ticket);
+
+  await logsCol.insertOne({
+    id: uuidv4(),
+    ticketId: ticket.id,
+    branchId: ticket.branchId,
+    category: ticket.category,
+    assignee: ticket.assignee,
+    paymentMethod: ticket.paymentMethod,
+    amount: ticket.amount,
+    date: ticket.date,
+    attachmentName: ticket.attachmentName,
+    attachmentType: ticket.attachmentType,
+    attachmentData: ticket.attachmentData,
+    items: ticket.items || [],
+    employeeName: ticket.employeeName,
+    source: ticket.source,
+    note: ticket.note,
+    status: ticket.status,
+    createdAt: ticket.createdAt
+  });
+
+  res.status(201).json({ ok: true, ticketId: ticket.id });
+});
+
+app.get("/api/expense-tickets/logs", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  const logs = await db.collection(COLLECTIONS.EXPENSE_TICKET_LOGS).find({}).sort({ createdAt: -1 }).toArray();
+  res.json(logs);
+});
+
+app.get("/api/expense-tickets/branch/history", authMiddleware, async (req, res) => {
+  if (req.user?.role !== "BRANCH") {
+    return res.status(403).json({ message: "Branch role required" });
+  }
+  const date = String(req.query.date || formatDateLocal(new Date())).trim();
+  const logs = await db
+    .collection(COLLECTIONS.EXPENSE_TICKET_LOGS)
+    .find({ branchId: req.user.branchId, category: "Branch Expense", date })
+    .sort({ createdAt: -1 })
+    .toArray();
   res.json(logs);
 });
 

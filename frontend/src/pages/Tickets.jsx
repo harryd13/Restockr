@@ -15,6 +15,8 @@ function Tickets() {
   const [expenseBranchId, setExpenseBranchId] = useState("");
   const [expenseAssignee, setExpenseAssignee] = useState("");
   const [expensePayment, setExpensePayment] = useState("");
+  const [expenseType, setExpenseType] = useState("");
+  const [expenseLogsPage, setExpenseLogsPage] = useState(1);
   const [activeTicket, setActiveTicket] = useState(null);
   const [assignee, setAssignee] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("");
@@ -50,6 +52,7 @@ function Tickets() {
     setExpenses(res.data || []);
   };
 
+
   const loadInventory = async () => {
     const res = await axios.get("/api/central-inventory");
     const map = new Map();
@@ -83,9 +86,24 @@ function Tickets() {
         if (expenseBranchId && log.branchId !== expenseBranchId) return false;
         if (expenseAssignee && log.assignee !== expenseAssignee) return false;
         if (expensePayment && log.paymentMethod !== expensePayment) return false;
+        if (expenseType && (log.type || "DAILY") !== expenseType) return false;
         return true;
       });
-  }, [expenses, expenseBranchId, expenseAssignee, expensePayment]);
+  }, [expenses, expenseBranchId, expenseAssignee, expensePayment, expenseType]);
+
+  const expenseLogsPageSize = 5;
+  const expenseLogsTotalPages = Math.max(1, Math.ceil(filteredExpenses.length / expenseLogsPageSize));
+  const expenseLogsStartIndex = (expenseLogsPage - 1) * expenseLogsPageSize;
+  const pagedExpenseLogs = filteredExpenses.slice(expenseLogsStartIndex, expenseLogsStartIndex + expenseLogsPageSize);
+
+  useEffect(() => {
+    setExpenseLogsPage(1);
+  }, [expenseBranchId, expenseAssignee, expensePayment, expenseType]);
+
+  useEffect(() => {
+    setExpenseLogsPage((prev) => Math.min(prev, expenseLogsTotalPages));
+  }, [expenseLogsTotalPages]);
+
 
   const openTicket = (ticket) => {
     setActiveTicket(ticket);
@@ -199,7 +217,7 @@ function Tickets() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div>
             <h3 className="section-title">Tickets</h3>
-            <p className="muted-text">Daily requests awaiting processing.</p>
+            <p className="muted-text">Review daily and other requests coming from branch.</p>
           </div>
           <button className="btn btn-secondary" type="button" onClick={loadTickets}>
             Refresh
@@ -244,8 +262,8 @@ function Tickets() {
       <section className="section-card">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div>
-            <h4 className="section-title">Expenses</h4>
-            <p className="muted-text">Completed daily requests with spend details.</p>
+            <h4 className="section-title">Ticket Logs</h4>
+            <p className="muted-text">Complete tickets logs.</p>
           </div>
           <button className="btn btn-secondary" type="button" onClick={loadExpenses}>
             Refresh
@@ -290,10 +308,15 @@ function Tickets() {
               </option>
             ))}
           </select>
+          <select value={expenseType} onChange={(e) => setExpenseType(e.target.value)} style={{ minWidth: 160 }}>
+            <option value="">Ticket Type</option>
+            <option value="DAILY">Daily</option>
+            <option value="OTHER">Other</option>
+          </select>
         </div>
         {filteredExpenses.length === 0 && <p className="muted-text" style={{ marginTop: "0.75rem" }}>No expenses logged yet.</p>}
         <div style={{ marginTop: "1rem", display: "grid", gap: "0.75rem" }}>
-          {filteredExpenses.map((log) => {
+          {pagedExpenseLogs.map((log) => {
             const isOpen = expandedExpenseId === log.id;
             return (
               <div
@@ -364,6 +387,26 @@ function Tickets() {
             );
           })}
         </div>
+        {filteredExpenses.length > expenseLogsPageSize && (
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem", marginTop: "0.75rem" }}>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setExpenseLogsPage((prev) => Math.max(1, prev - 1))}
+              disabled={expenseLogsPage === 1}
+            >
+              Prev
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setExpenseLogsPage((prev) => Math.min(expenseLogsTotalPages, prev + 1))}
+              disabled={expenseLogsPage === expenseLogsTotalPages}
+            >
+              Next
+            </button>
+          </div>
+        )}
       </section>
 
       <Modal
