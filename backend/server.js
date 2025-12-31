@@ -58,6 +58,20 @@ function startOfWeek(date = new Date()) {
   return formatDateLocal(today);
 }
 
+async function sendSlackWebhook(message) {
+  const webhookUrl = String(process.env.WEBHOOK_URL || "").trim();
+  if (!webhookUrl) return;
+  try {
+    await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: message })
+    });
+  } catch (err) {
+    console.error("Slack webhook failed", err?.message || err);
+  }
+}
+
 function authMiddleware(req, res, next) {
   const authHeader = req.headers["authorization"];
   if (!authHeader) return res.status(401).json({ message: "Missing token" });
@@ -943,6 +957,18 @@ app.post("/api/expense-tickets/branch", authMiddleware, async (req, res) => {
     status: ticket.status,
     createdAt: ticket.createdAt
   });
+
+  const branchDoc = await db.collection(COLLECTIONS.BRANCHES).findOne({ id: ticket.branchId });
+  const branchName = branchDoc?.name || ticket.branchId;
+  const itemLines = (ticket.items || []).map((row) => `- ${row.name} (${row.qty})`).join("\n");
+  const slackMessage = [
+    `Branch expense logged: ${branchName}`,
+    `Date: ${ticket.date}`,
+    `Amount: Rs ${Number(ticket.amount || 0).toFixed(2)}`,
+    `Payment: ${ticket.paymentMethod || "N/A"}`,
+    itemLines ? `Items:\n${itemLines}` : "Items: None"
+  ].join("\n");
+  sendSlackWebhook(slackMessage);
 
   res.status(201).json({ ok: true, ticketId: ticket.id });
 });
