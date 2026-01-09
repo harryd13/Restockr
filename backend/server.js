@@ -122,104 +122,142 @@ async function createCombinedPurchaseRunForRequest(requestId) {
   const masterItemsCol = db.collection(COLLECTIONS.ITEMS);
   const categoriesCol = db.collection(COLLECTIONS.CATEGORIES);
 
-  const req = await requestsCol.findOne({ id: requestId });
-  if (!req || req.status !== "SUBMITTED") return null;
+  const pendingReqs = await requestsCol.find({ status: "SUBMITTED" }).sort({ createdAt: 1 }).toArray();
+  if (!pendingReqs.length) return null;
 
-  let run = await runsCol.findOne({ requestId });
-  if (run && run.status !== "DRAFT") return run;
-  if (!run) {
-    run = {
-      id: uuidv4(),
-      requestId,
-      branchId: req.branchId,
-      weekStartDate: req.weekStartDate,
-      status: "DRAFT",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-    await runsCol.insertOne(run);
+  const runMap = new Map();
+  const pendingIds = pendingReqs.map((r) => r.id);
+  const staleRuns = await runsCol.find({ status: "DRAFT", requestId: { $nin: pendingIds } }).toArray();
+  if (staleRuns.length) {
+    const staleIds = staleRuns.map((r) => r.id);
+    await itemsCol.deleteMany({ runId: { $in: staleIds }, manual: { $ne: true } });
+    await runsCol.updateMany({ id: { $in: staleIds } }, { $set: { status: "ARCHIVED", updatedAt: new Date().toISOString() } });
+  }
+  for (const pendingReq of pendingReqs) {
+    let run = await runsCol.findOne({ requestId: pendingReq.id });
+    if (run && run.status !== "DRAFT") continue;
+    if (!run) {
+      run = {
+        id: uuidv4(),
+        requestId: pendingReq.id,
+        branchId: pendingReq.branchId,
+        weekStartDate: pendingReq.weekStartDate,
+        status: "DRAFT",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      await runsCol.insertOne(run);
+    }
+    runMap.set(pendingReq.id, run);
   }
 
-  const reqItems = await reqItemsCol.find({ requestId }).toArray();
-  if (!reqItems.length) {
-    await itemsCol.deleteMany({ runId: run.id, manual: { $ne: true } });
-    await runsCol.updateOne({ id: run.id }, { $set: { updatedAt: new Date().toISOString() } });
-    return run;
-  }
+  const allReqItems = pendingIds.length ? await reqItemsCol.find({ requestId: { $in: pendingIds } }).toArray() : [];
+  if (!allReqItems.length) return runMap.get(requestId) || null;
 
-  const itemIds = reqItems.map((r) => r.itemId);
+  const itemsByReqId = new Map();
+  allReqItems.forEach((row) => {
+    if (!itemsByReqId.has(row.requestId)) itemsByReqId.set(row.requestId, []);
+    itemsByReqId.get(row.requestId).push(row);
+  });
+
+  const itemIds = Array.from(new Set(allReqItems.map((r) => r.itemId)));
   const inventoryMap = await getCentralInventoryMap(itemIds);
   const masterItems = await masterItemsCol.find({ id: { $in: itemIds } }).toArray();
+  const masterMap = new Map(masterItems.map((it) => [it.id, it]));
   const categories = await categoriesCol.find({}).toArray();
   const categoryMap = new Map(categories.map((c) => [c.id, c.name]));
 
-  const autoItems = [];
-  const distItems = [];
-  for (const row of reqItems) {
-    const onHand = inventoryMap.get(row.itemId) || 0;
-    const shortfall = Math.max(0, (row.requestedQty || 0) - onHand);
-    if (!shortfall) continue;
-    const item = masterItems.find((it) => it.id === row.itemId);
-    if (!item) continue;
-    autoItems.push({
-      id: uuidv4(),
-      runId: run.id,
-      itemId: row.itemId,
-      itemName: item.name,
-      categoryName: categoryMap.get(item.categoryId) || "",
-      requestedTotal: shortfall,
-      approvedQty: shortfall,
-      unitPrice: item.defaultPrice || 0,
-      status: "AVAILABLE",
-      manual: false,
-      createdAt: new Date().toISOString()
-    });
+  const remainingMap = new Map(inventoryMap);
+  const approvedByRequest = new Map();
+  const shortfallByRequest = new Map();
+
+  for (const pendingReq of pendingReqs) {
+    const reqItems = itemsByReqId.get(pendingReq.id) || [];
+    const approvedMap = new Map();
+    const shortfallMap = new Map();
+    for (const row of reqItems) {
+      const requestedQty = Number(row.requestedQty || 0);
+      const onHand = remainingMap.get(row.itemId) || 0;
+      const allocated = Math.min(requestedQty, onHand);
+      if (allocated > 0) approvedMap.set(row.itemId, allocated);
+      const shortfall = Math.max(0, requestedQty - allocated);
+      if (shortfall > 0) shortfallMap.set(row.itemId, shortfall);
+      remainingMap.set(row.itemId, onHand - allocated);
+    }
+    approvedByRequest.set(pendingReq.id, approvedMap);
+    shortfallByRequest.set(pendingReq.id, shortfallMap);
   }
 
-  await itemsCol.deleteMany({ runId: run.id, manual: { $ne: true } });
-  if (autoItems.length) {
-    await itemsCol.insertMany(autoItems);
-  }
-  await runsCol.updateOne({ id: run.id }, { $set: { updatedAt: new Date().toISOString() } });
-
-  if (!autoItems.length) {
-    const existingDist = await distRunsCol.findOne({ requestId });
-    if (!existingDist) {
-      const distRun = {
+  for (const pendingReq of pendingReqs) {
+    const run = runMap.get(pendingReq.id);
+    if (!run || run.status !== "DRAFT") continue;
+    const reqItems = itemsByReqId.get(pendingReq.id) || [];
+    const shortfallMap = shortfallByRequest.get(pendingReq.id) || new Map();
+    const autoItems = [];
+    for (const [itemId, shortfall] of shortfallMap.entries()) {
+      const item = masterMap.get(itemId);
+      if (!item) continue;
+      autoItems.push({
         id: uuidv4(),
-        requestId,
-        branchId: req.branchId,
-        weekStartDate: req.weekStartDate,
-        combinedRunId: run.id,
-        status: "DRAFT",
+        runId: run.id,
+        itemId,
+        itemName: item.name,
+        categoryName: categoryMap.get(item.categoryId) || "",
+        requestedTotal: shortfall,
+        approvedQty: shortfall,
+        unitPrice: item.defaultPrice || 0,
+        status: "AVAILABLE",
+        manual: false,
         createdAt: new Date().toISOString()
-      };
-      await distRunsCol.insertOne(distRun);
+      });
+    }
 
-      for (const row of reqItems) {
-        const remaining = inventoryMap.get(row.itemId) || 0;
-        const approvedQty = Math.min(row.requestedQty || 0, remaining);
-        distItems.push({
+    await itemsCol.deleteMany({ runId: run.id, manual: { $ne: true } });
+    if (autoItems.length) {
+      await itemsCol.insertMany(autoItems);
+    }
+    await runsCol.updateOne({ id: run.id }, { $set: { updatedAt: new Date().toISOString() } });
+
+    if (!autoItems.length) {
+      const existingDist = await distRunsCol.findOne({ requestId: pendingReq.id });
+      if (!existingDist) {
+        const distRun = {
           id: uuidv4(),
-          runId: distRun.id,
-          requestId,
-          branchId: req.branchId,
-          itemId: row.itemId,
-          itemName: row.itemName,
-          categoryName: row.categoryName,
-          requestedQty: row.requestedQty,
-          approvedQty,
-          unitPrice: row.unitPrice || 0,
-          status: approvedQty > 0 ? "AVAILABLE" : "UNAVAILABLE"
-        });
-      }
+          requestId: pendingReq.id,
+          branchId: pendingReq.branchId,
+          weekStartDate: pendingReq.weekStartDate,
+          combinedRunId: run.id,
+          status: "DRAFT",
+          createdAt: new Date().toISOString()
+        };
+        await distRunsCol.insertOne(distRun);
 
-      if (distItems.length) {
-        await distItemsCol.insertMany(distItems);
+        const approvedMap = approvedByRequest.get(pendingReq.id) || new Map();
+        const distItems = reqItems.map((row) => {
+          const approvedQty = approvedMap.get(row.itemId) || 0;
+          return {
+            id: uuidv4(),
+            runId: distRun.id,
+            requestId: pendingReq.id,
+            branchId: pendingReq.branchId,
+            itemId: row.itemId,
+            itemName: row.itemName,
+            categoryName: row.categoryName,
+            requestedQty: row.requestedQty,
+            approvedQty,
+            unitPrice: row.unitPrice || 0,
+            status: approvedQty > 0 ? "AVAILABLE" : "UNAVAILABLE"
+          };
+        });
+
+        if (distItems.length) {
+          await distItemsCol.insertMany(distItems);
+        }
       }
     }
   }
-  return run;
+
+  return runMap.get(requestId) || null;
 }
 
 async function ensureIndexes() {
@@ -1027,6 +1065,39 @@ app.get("/api/requests/history", authMiddleware, async (req, res) => {
   res.json(formatted);
 });
 
+app.get("/api/requests/history/:id/items", authMiddleware, async (req, res) => {
+  if (req.user.role !== "BRANCH") {
+    return res.status(403).json({ message: "Branch role required" });
+  }
+  const { id } = req.params;
+  const requestsCol = db.collection(COLLECTIONS.WEEKLY_REQUESTS);
+  const itemsCol = db.collection(COLLECTIONS.WEEKLY_REQUEST_ITEMS);
+  const distItemsCol = db.collection(COLLECTIONS.DISTRIBUTION_ITEMS);
+
+  const reqObj = await requestsCol.findOne({ id, branchId: req.user.branchId });
+  if (!reqObj) return res.status(404).json({ message: "Request not found" });
+
+  const items = await itemsCol.find({ requestId: id }).toArray();
+  const distItems = await distItemsCol.find({ requestId: id, branchId: req.user.branchId }).toArray();
+  const distMap = new Map(distItems.map((row) => [row.itemId, row]));
+
+  const result = items.map((row) => {
+    const distRow = distMap.get(row.itemId);
+    const approvedQty = distRow ? Number(distRow.approvedQty || 0) : 0;
+    return {
+      itemId: row.itemId,
+      itemName: row.itemName,
+      categoryName: row.categoryName,
+      requestedQty: row.requestedQty,
+      approvedQty,
+      unitPrice: row.unitPrice || 0,
+      status: distRow?.status || row.status || "AVAILABLE"
+    };
+  });
+
+  res.json({ status: reqObj.status, items: result });
+});
+
 // --- Central Inventory / Combined Purchase / Distribution ---
 app.get("/api/central-inventory", authMiddleware, async (req, res) => {
   if (!ensureAdmin(req, res)) return;
@@ -1188,6 +1259,22 @@ app.post("/api/combined-purchase-queue/submit", authMiddleware, async (req, res)
     for (const row of reqItems) {
       const purchaseItem = itemsById.get(row.itemId);
       if (purchaseItem && purchaseItem.status === "UNAVAILABLE") {
+        const remaining = availableMap.get(row.itemId) || 0;
+        const approvedQty = Math.min(row.requestedQty || 0, remaining);
+        availableMap.set(row.itemId, remaining - approvedQty);
+        distItems.push({
+          id: uuidv4(),
+          runId: distRun.id,
+          requestId: req.id,
+          branchId: req.branchId,
+          itemId: row.itemId,
+          itemName: row.itemName,
+          categoryName: row.categoryName,
+          requestedQty: row.requestedQty,
+          approvedQty,
+          unitPrice: purchaseItem?.unitPrice || row.unitPrice || 0,
+          status: "UNAVAILABLE"
+        });
         continue;
       }
       const remaining = availableMap.get(row.itemId) || 0;
@@ -1359,7 +1446,22 @@ app.post("/api/combined-purchase-run/:id/submit", authMiddleware, async (req, re
       for (const row of reqItems) {
         const purchaseItem = purchaseItemMap.get(row.itemId);
         const remaining = availableMap.get(row.itemId) || 0;
-        if (purchaseItem && purchaseItem.status === "UNAVAILABLE" && remaining <= 0) {
+        if (purchaseItem && purchaseItem.status === "UNAVAILABLE") {
+          const approvedQty = Math.min(row.requestedQty || 0, remaining);
+          availableMap.set(row.itemId, remaining - approvedQty);
+          distItems.push({
+            id: uuidv4(),
+            runId: distRun.id,
+            requestId: submittedReq.id,
+            branchId: submittedReq.branchId,
+            itemId: row.itemId,
+            itemName: row.itemName,
+            categoryName: row.categoryName,
+            requestedQty: row.requestedQty,
+            approvedQty,
+            unitPrice: purchaseItem?.unitPrice || row.unitPrice || 0,
+            status: "UNAVAILABLE"
+          });
           continue;
         }
         const approvedQty = Math.min(row.requestedQty || 0, remaining);
@@ -1508,7 +1610,8 @@ app.post("/api/distribution-run/:id/finalize", authMiddleware, async (req, res) 
       requestedQty: row.requestedQty,
       approvedQty: row.approvedQty,
       unitPrice: row.unitPrice,
-      totalPrice: lineTotal
+      totalPrice: lineTotal,
+      status: row.status
     });
   }
 
@@ -1615,7 +1718,8 @@ app.post("/api/distribution-run/finalize-multi", authMiddleware, async (req, res
       requestedQty: row.requestedQty,
       approvedQty: row.approvedQty,
       unitPrice: row.unitPrice,
-      totalPrice: lineTotal
+      totalPrice: lineTotal,
+      status: row.status
     });
   }
 

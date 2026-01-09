@@ -592,7 +592,7 @@ function Insights() {
                             </thead>
                             <tbody>
                               {branch.items.map((item) => (
-                                <tr key={`${branch.branchId}-${item.itemId}`}>
+                                <tr key={`${branch.branchId}-${item.itemId}`} className={item.status === "UNAVAILABLE" ? "row-unavailable" : ""}>
                                   <td>{item.itemName}</td>
                                   <td>{item.categoryName}</td>
                                   <td>{item.requestedQty}</td>

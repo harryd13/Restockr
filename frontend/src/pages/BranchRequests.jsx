@@ -10,6 +10,9 @@ function BranchRequests() {
   const [requestItems, setRequestItems] = useState([]);
   const [history, setHistory] = useState([]);
   const [historyPage, setHistoryPage] = useState(1);
+  const [expandedHistoryId, setExpandedHistoryId] = useState("");
+  const [historyItems, setHistoryItems] = useState({});
+  const [historyStatus, setHistoryStatus] = useState({});
   const [showSubmitModal, setShowSubmitModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const autosaveTimer = useRef(null);
@@ -30,7 +33,10 @@ function BranchRequests() {
 
   const loadMaster = async () => {
     const [catRes] = await Promise.all([axios.get("/api/categories")]);
-    setCategories(catRes.data);
+    const cleaned = (catRes.data || []).filter(
+      (cat) => String(cat.name || "").toLowerCase() !== "daily"
+    );
+    setCategories(cleaned);
   };
 
   const loadCurrentRequest = async () => {
@@ -89,6 +95,13 @@ function BranchRequests() {
     const res = await axios.get("/api/requests/history");
     setHistory(res.data);
     setHistoryPage(1);
+  };
+
+  const loadHistoryItems = async (requestId) => {
+    if (!requestId) return;
+    const res = await axios.get(`/api/requests/history/${requestId}/items`);
+    setHistoryItems((prev) => ({ ...prev, [requestId]: res.data.items || [] }));
+    setHistoryStatus((prev) => ({ ...prev, [requestId]: res.data.status || "" }));
   };
 
   useEffect(() => {
@@ -212,19 +225,77 @@ function BranchRequests() {
           <table>
             <thead>
               <tr>
+                <th>Details</th>
                 <th>Week</th>
                 <th>Status</th>
                 <th>Total</th>
               </tr>
             </thead>
             <tbody>
-              {pagedHistory.map((h) => (
-                <tr key={h.id}>
-                  <td>{h.weekStartDate}</td>
-                  <td>{h.status}</td>
-                  <td>₹{h.total}</td>
-                </tr>
-              ))}
+              {pagedHistory.map((h) => {
+                const isOpen = expandedHistoryId === h.id;
+                const itemsForHistory = historyItems[h.id] || [];
+                const statusForHistory = historyStatus[h.id] || h.status;
+                return (
+                  <React.Fragment key={h.id}>
+                    <tr>
+                      <td>
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          onClick={async () => {
+                            if (isOpen) {
+                              setExpandedHistoryId("");
+                              return;
+                            }
+                            if (!historyItems[h.id]) {
+                              await loadHistoryItems(h.id);
+                            }
+                            setExpandedHistoryId(h.id);
+                          }}
+                        >
+                          {isOpen ? "Hide" : "View"}
+                        </button>
+                      </td>
+                      <td>{h.weekStartDate}</td>
+                      <td>{h.status}</td>
+                      <td>₹{h.total}</td>
+                    </tr>
+                    {isOpen && (
+                      <tr>
+                        <td colSpan={4}>
+                          <div className="table-wrapper" style={{ marginTop: "0.5rem" }}>
+                            <table>
+                              <thead>
+                                <tr>
+                                  <th>Item</th>
+                                  <th>Category</th>
+                                  <th>Requested</th>
+                                  <th>Approved</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {itemsForHistory.map((item) => {
+                                  const isUndistributed =
+                                    statusForHistory === "DISTRIBUTED" && Number(item.approvedQty || 0) < Number(item.requestedQty || 0);
+                                  return (
+                                    <tr key={`${h.id}-${item.itemId}`} className={isUndistributed ? "row-unavailable" : ""}>
+                                      <td>{item.itemName}</td>
+                                      <td>{item.categoryName}</td>
+                                      <td>{item.requestedQty}</td>
+                                      <td>{item.approvedQty}</td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>

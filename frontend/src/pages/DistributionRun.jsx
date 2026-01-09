@@ -190,7 +190,7 @@ function DistributionRun() {
                     </thead>
                     <tbody>
                       {items.map((row) => (
-                        <tr key={row.id}>
+                        <tr key={row.id} className={row.status === "UNAVAILABLE" ? "row-unavailable" : ""}>
                           <td>{row.itemName}</td>
                           <td>{row.categoryName}</td>
                           <td>{row.requestedQty}</td>
