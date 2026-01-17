@@ -51,11 +51,31 @@ function formatDateLocal(dateObj) {
   return `${y}-${m}-${d}`;
 }
 
+const ALLOW_WEEKLY_ANY_DAY = String(process.env.WEEKLY_ALLOW_ANY_DAY || "").toLowerCase() === "true";
+
+function isThursday(date = new Date()) {
+  return new Date(date).getDay() === 4;
+}
+
 function startOfWeek(date = new Date()) {
-  // Use today's date as the displayed "week start" to keep UI current daily.
+  // Business week starts on Thursday.
+  const targetDow = 4; // Thursday
   const today = new Date(date);
   today.setHours(0, 0, 0, 0);
+  const diff = (today.getDay() - targetDow + 7) % 7;
+  today.setDate(today.getDate() - diff);
   return formatDateLocal(today);
+}
+
+const DAILY_MENTIONS = {
+  RP: ["U0A78T3EPLP", "U0A838J0E73"],
+  BR: ["U0A838J0E73"],
+  RS: ["U0A5RMEA32N", "U0A838J0E73"]
+};
+
+function formatMentions(userIds) {
+  if (!userIds || !userIds.length) return "";
+  return userIds.map((id) => `<@${id}>`).join(" ");
 }
 
 async function sendSlackWebhook(message) {
@@ -69,6 +89,20 @@ async function sendSlackWebhook(message) {
     });
   } catch (err) {
     console.error("Slack webhook failed", err?.message || err);
+  }
+}
+
+async function sendDailyWebhook(message) {
+  const webhookUrl = String(process.env.DAILYHOOK || "").trim();
+  if (!webhookUrl) return;
+  try {
+    await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: message })
+    });
+  } catch (err) {
+    console.error("Daily webhook failed", err?.message || err);
   }
 }
 
@@ -122,12 +156,19 @@ async function createCombinedPurchaseRunForRequest(requestId) {
   const masterItemsCol = db.collection(COLLECTIONS.ITEMS);
   const categoriesCol = db.collection(COLLECTIONS.CATEGORIES);
 
-  const pendingReqs = await requestsCol.find({ status: "SUBMITTED" }).sort({ createdAt: 1 }).toArray();
+  const targetReq = await requestsCol.findOne({ id: requestId });
+  const targetWeek = targetReq?.weekStartDate || startOfWeek();
+  const pendingReqs = await requestsCol
+    .find({ status: "SUBMITTED", weekStartDate: targetWeek })
+    .sort({ createdAt: 1 })
+    .toArray();
   if (!pendingReqs.length) return null;
 
   const runMap = new Map();
   const pendingIds = pendingReqs.map((r) => r.id);
-  const staleRuns = await runsCol.find({ status: "DRAFT", requestId: { $nin: pendingIds } }).toArray();
+  const staleRuns = await runsCol
+    .find({ status: "DRAFT", weekStartDate: targetWeek, requestId: { $nin: pendingIds } })
+    .toArray();
   if (staleRuns.length) {
     const staleIds = staleRuns.map((r) => r.id);
     await itemsCol.deleteMany({ runId: { $in: staleIds }, manual: { $ne: true } });
@@ -344,6 +385,26 @@ app.get("/api/requests/current", authMiddleware, async (req, res) => {
   const requestsCol = db.collection(COLLECTIONS.WEEKLY_REQUESTS);
   const itemsCol = db.collection(COLLECTIONS.WEEKLY_REQUEST_ITEMS);
 
+  const reqObj = await requestsCol.findOne({ branchId, weekStartDate, status: "DRAFT" });
+  if (!reqObj) {
+    return res.json({ request: null, items: [] });
+  }
+  const items = await itemsCol.find({ requestId: reqObj.id }).toArray();
+  res.json({ request: reqObj, items });
+});
+
+app.post("/api/requests/current", authMiddleware, async (req, res) => {
+  if (req.user.role !== "BRANCH") {
+    return res.status(403).json({ message: "Branch role required" });
+  }
+  if (!ALLOW_WEEKLY_ANY_DAY && !isThursday()) {
+    return res.status(400).json({ message: "Weekly requests can only be started on Thursday." });
+  }
+  const branchId = req.user.branchId;
+  const weekStartDate = startOfWeek();
+  const requestsCol = db.collection(COLLECTIONS.WEEKLY_REQUESTS);
+  const itemsCol = db.collection(COLLECTIONS.WEEKLY_REQUEST_ITEMS);
+
   let reqObj = await requestsCol.findOne({ branchId, weekStartDate, status: "DRAFT" });
   if (!reqObj) {
     reqObj = {
@@ -358,7 +419,7 @@ app.get("/api/requests/current", authMiddleware, async (req, res) => {
     await requestsCol.insertOne(reqObj);
   }
   const items = await itemsCol.find({ requestId: reqObj.id }).toArray();
-  res.json({ request: reqObj, items });
+  res.status(201).json({ request: reqObj, items });
 });
 
 app.post("/api/requests/:id/items", authMiddleware, async (req, res) => {
@@ -570,6 +631,32 @@ app.post("/api/daily-requests/:id/submit", authMiddleware, async (req, res) => {
     fromStock: false
   }));
   await ticketItemsCol.insertMany(ticketItems);
+
+  const branchDoc = await db.collection(COLLECTIONS.BRANCHES).findOne({ id: reqObj.branchId });
+  const branchName = branchDoc?.name || reqObj.branchId;
+  const mentionLine = formatMentions(DAILY_MENTIONS[reqObj.branchId] || []);
+  const itemLines = items
+    .map((it) => {
+      const qty = Number(it.requestedQty || 0);
+      return `${it.itemName} (${qty})`;
+    })
+    .join("\n");
+  const total = items.reduce((sum, it) => sum + Number(it.requestedQty || 0) * Number(it.unitPrice || 0), 0);
+  const separator = "_____________________________";
+  const totalLine = mentionLine
+    ? `Estimated total: Rs ${total.toFixed(2)} ${mentionLine}`
+    : `Estimated total: Rs ${total.toFixed(2)}`;
+  const dailyMessage = [
+    "Daily request submitted.",
+    `Branch - ${branchName}`,
+    separator,
+    "Items:-",
+    itemLines || "None",
+    separator,
+    `Date: ${reqObj.requestDate}`,
+    totalLine
+  ].join("\n");
+  sendDailyWebhook(dailyMessage);
 
   const updated = await requestsCol.findOne({ id });
   res.json({ request: updated });
@@ -1152,9 +1239,10 @@ app.get("/api/combined-purchase-run", authMiddleware, async (req, res) => {
 
 app.get("/api/combined-purchase-queue", authMiddleware, async (req, res) => {
   if (!ensureAdmin(req, res)) return;
+  const weekStartDate = String(req.query.week || startOfWeek()).trim();
   const runs = await db
     .collection(COLLECTIONS.COMBINED_PURCHASE_RUNS)
-    .find({ status: "DRAFT" })
+    .find({ status: "DRAFT", weekStartDate })
     .sort({ createdAt: -1 })
     .toArray();
   const runIds = runs.map((r) => r.id);
@@ -1195,10 +1283,9 @@ app.post("/api/combined-purchase-queue/submit", authMiddleware, async (req, res)
   const reqCol = db.collection(COLLECTIONS.WEEKLY_REQUESTS);
   const reqItemsCol = db.collection(COLLECTIONS.WEEKLY_REQUEST_ITEMS);
 
-  const draftRuns = await runsCol.find({ status: "DRAFT" }).sort({ createdAt: 1 }).toArray();
+  const weekStartDate = String(req.query.week || startOfWeek()).trim();
+  const draftRuns = await runsCol.find({ status: "DRAFT", weekStartDate }).sort({ createdAt: 1 }).toArray();
   const runIds = draftRuns.map((r) => r.id);
-  const weekSet = new Set(draftRuns.map((r) => r.weekStartDate).filter(Boolean));
-  const weekStartDate = runIds.length ? (weekSet.size === 1 ? Array.from(weekSet)[0] : "MULTI") : startOfWeek();
 
   const logItems = rows.map((row) => ({
     itemId: row.itemId,
@@ -1237,6 +1324,19 @@ app.post("/api/combined-purchase-queue/submit", authMiddleware, async (req, res)
   const inventoryMap = await getCentralInventoryMap(allItemIds);
   const availableMap = new Map(inventoryMap);
   const itemsById = new Map(logItems.map((row) => [row.itemId, row]));
+
+  const existingDistRuns = reqIds.length
+    ? await distRunsCol.find({ requestId: { $in: reqIds } }).toArray()
+    : [];
+  const existingRunIds = existingDistRuns.map((r) => r.id);
+  if (existingRunIds.length) {
+    const existingItems = await distItemsCol.find({ runId: { $in: existingRunIds } }).toArray();
+    for (const row of existingItems) {
+      const current = availableMap.get(row.itemId) || 0;
+      const next = Math.max(0, current - Number(row.approvedQty || 0));
+      availableMap.set(row.itemId, next);
+    }
+  }
 
   for (const run of draftRuns) {
     const existingDist = await distRunsCol.findOne({ combinedRunId: run.id });

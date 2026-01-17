@@ -30,6 +30,8 @@ function App() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [notificationCounts, setNotificationCounts] = useState({ combined: 0, distribution: 0, tickets: 0 });
   const [lastSeenCounts, setLastSeenCounts] = useState({ combined: 0, distribution: 0, tickets: 0 });
+  const allowWeeklyAnyDay = String(import.meta.env.VITE_WEEKLY_ALLOW_ANY_DAY || "").toLowerCase() === "true";
+  const weeklyEnabled = allowWeeklyAnyDay || new Date().getDay() === 4;
 
   useEffect(() => {
     const stored = localStorage.getItem("foffee_auth");
@@ -217,7 +219,12 @@ function App() {
                 </button>
               )}
               {user.role === "BRANCH" && (
-                <button className={`tab ${activeTab === "branch" ? "tab--active" : ""}`} onClick={() => selectTab("branch")}>
+                <button
+                  className={`tab ${activeTab === "branch" ? "tab--active" : ""}`}
+                  onClick={() => weeklyEnabled && selectTab("branch")}
+                  disabled={!weeklyEnabled}
+                  title={weeklyEnabled ? "" : "Weekly requests are available on Thursday."}
+                >
                   Weekly Request
                 </button>
               )}
@@ -414,9 +421,12 @@ function App() {
                     type="button"
                     className={activeTab === "branch" ? "drawer__item drawer__item--active" : "drawer__item"}
                     onClick={() => {
+                      if (!weeklyEnabled) return;
                       selectTab("branch");
                       setDrawerOpen(false);
                     }}
+                    disabled={!weeklyEnabled}
+                    title={weeklyEnabled ? "" : "Weekly requests are available on Thursday."}
                   >
                     Weekly Request
                   </button>

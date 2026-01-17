@@ -16,6 +16,8 @@ function BranchRequests() {
   const [showSubmitModal, setShowSubmitModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const autosaveTimer = useRef(null);
+  const allowWeeklyAnyDay = String(import.meta.env.VITE_WEEKLY_ALLOW_ANY_DAY || "").toLowerCase() === "true";
+  const weeklyEnabled = allowWeeklyAnyDay || new Date().getDay() === 4;
 
   const hasDraftItems = Object.values(quantities).some(qty => qty > 0);
   const historyPageSize = 5;
@@ -41,13 +43,20 @@ function BranchRequests() {
 
   const loadCurrentRequest = async () => {
     const res = await axios.get("/api/requests/current");
-    setRequest(res.data.request);
-    setRequestItems(res.data.items);
+    setRequest(res.data.request || null);
+    setRequestItems(res.data.items || []);
     const q = {};
-    res.data.items.forEach((it) => {
+    (res.data.items || []).forEach((it) => {
       q[it.itemId] = it.requestedQty;
     });
     setQuantities(q);
+  };
+
+  const createCurrentRequest = async () => {
+    const res = await axios.post("/api/requests/current");
+    setRequest(res.data.request || null);
+    setRequestItems(res.data.items || []);
+    setQuantities({});
   };
 
   const loadItemsForCategory = async (categoryId) => {
@@ -125,15 +134,24 @@ function BranchRequests() {
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
       <section className="section-card">
         <h3 className="section-title">Branch Weekly Request</h3>
-        {request && (
+        {request ? (
           <p className="muted-text">
             Week starting <strong style={{ color: "#0f172a" }}>{request.weekStartDate}</strong> · Status{" "}
             <span className="stats-pill">{request.status}</span>
           </p>
+        ) : (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", alignItems: "center" }}>
+            <p className="muted-text" style={{ margin: 0 }}>
+              {weeklyEnabled ? "No weekly request started for this week." : "Weekly requests are available on Thursday."}
+            </p>
+            <button type="button" className="btn btn-primary" onClick={createCurrentRequest} disabled={!weeklyEnabled}>
+              Start weekly request
+            </button>
+          </div>
         )}
       </section>
 
-      <section className="section-card">
+      <section className="section-card" style={{ opacity: request && weeklyEnabled ? 1 : 0.6 }}>
         <h4 className="section-title">1. Choose Category</h4>
         <p className="muted-text">Pick a category to load recommended SKUs.</p>
         <div className="chip-row" style={{ marginTop: "0.75rem" }}>
@@ -142,7 +160,8 @@ function BranchRequests() {
               type="button"
               className={`chip ${activeCategory === cat.id ? "chip--active" : ""}`}
               key={cat.id}
-              onClick={() => loadItemsForCategory(cat.id)}
+              onClick={() => request && weeklyEnabled && loadItemsForCategory(cat.id)}
+              disabled={!request || !weeklyEnabled}
             >
               {cat.name}
             </button>
@@ -150,7 +169,7 @@ function BranchRequests() {
         </div>
       </section>
 
-      {activeCategory && (
+      {activeCategory && request && (
         <section className="section-card">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
             <h4 className="section-title">2. Set Quantities</h4>
