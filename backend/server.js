@@ -51,10 +51,23 @@ function formatDateLocal(dateObj) {
   return `${y}-${m}-${d}`;
 }
 
+function parseStartDate(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  parsed.setHours(0, 0, 0, 0);
+  return parsed.toISOString();
+}
+
 const ALLOW_WEEKLY_ANY_DAY = String(process.env.WEEKLY_ALLOW_ANY_DAY || "").toLowerCase() === "true";
 
-function isThursday(date = new Date()) {
-  return new Date(date).getDay() === 4;
+function isWeeklyWindow(date = new Date()) {
+  const now = new Date(date);
+  const day = now.getDay();
+  if (day === 4) return true; // Thursday
+  if (day === 5 && now.getHours() < 12) return true; // Friday before noon
+  return false;
 }
 
 function startOfWeek(date = new Date()) {
@@ -127,6 +140,16 @@ function ensureAdmin(req, res) {
   }
   return true;
 }
+
+app.get("/api/health", (req, res) => {
+  const now = new Date();
+  res.json({
+    ok: true,
+    serverTime: now.toISOString(),
+    localTime: now.toString(),
+    timezoneOffsetMinutes: now.getTimezoneOffset()
+  });
+});
 
 async function getCentralInventoryMap(itemIds) {
   if (!itemIds.length) return new Map();
@@ -343,7 +366,7 @@ app.post("/api/login", async (req, res) => {
   const token = jwt.sign(
     { id: user.id, role: user.role, branchId: user.branchId, name: user.name },
     JWT_SECRET,
-    { expiresIn: "7d" }
+    { expiresIn: "1h" }
   );
   res.json({
     token,
@@ -397,8 +420,8 @@ app.post("/api/requests/current", authMiddleware, async (req, res) => {
   if (req.user.role !== "BRANCH") {
     return res.status(403).json({ message: "Branch role required" });
   }
-  if (!ALLOW_WEEKLY_ANY_DAY && !isThursday()) {
-    return res.status(400).json({ message: "Weekly requests can only be started on Thursday." });
+  if (!ALLOW_WEEKLY_ANY_DAY && !isWeeklyWindow()) {
+    return res.status(400).json({ message: "Weekly requests can only be started on Thursday or before 12pm Friday." });
   }
   const branchId = req.user.branchId;
   const weekStartDate = startOfWeek();
@@ -545,9 +568,14 @@ app.post("/api/daily-requests/:id/items", authMiddleware, async (req, res) => {
     return res.status(400).json({ message: "Cannot edit non-draft request" });
   }
 
+  const requestedItems = (bodyItems || []).filter((bi) => bi.requestedQty > 0);
+  if (requestedItems.length > 10) {
+    return res.status(400).json({ message: "Daily requests allow a maximum of 10 items. Submit to create another request for today." });
+  }
+
   await itemsCol.deleteMany({ requestId: id });
 
-  const itemIds = (bodyItems || []).filter((bi) => bi.requestedQty > 0).map((bi) => bi.itemId);
+  const itemIds = requestedItems.map((bi) => bi.itemId);
   const itemDocs = await masterItemsCol.find({ id: { $in: itemIds } }).toArray();
   const categoryDocs = await categoriesCol.find({}).toArray();
   const categoryMap = new Map(categoryDocs.map((c) => [c.id, c]));
@@ -753,6 +781,35 @@ app.get("/api/tickets", authMiddleware, async (req, res) => {
   res.json({ tickets, items });
 });
 
+app.post("/api/tickets/:id/delete", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  const { id } = req.params;
+  const { reason } = req.body || {};
+  const allowedReasons = ["duplicate", "wrong", "stale"];
+  if (!allowedReasons.includes(String(reason || "").toLowerCase())) {
+    return res.status(400).json({ message: "Valid delete reason required." });
+  }
+
+  const ticketsCol = db.collection(COLLECTIONS.TICKETS);
+  const ticket = await ticketsCol.findOne({ id });
+  if (!ticket) return res.status(404).json({ message: "Ticket not found" });
+
+  await ticketsCol.updateOne(
+    { id },
+    {
+      $set: {
+        status: "DELETED",
+        deleteReason: String(reason).toLowerCase(),
+        deletedAt: new Date().toISOString(),
+        deletedBy: req.user.id,
+        updatedAt: new Date().toISOString()
+      }
+    }
+  );
+
+  res.json({ ok: true });
+});
+
 app.post("/api/tickets/:id/done", authMiddleware, async (req, res) => {
   if (!ensureAdmin(req, res)) return;
   const { id } = req.params;
@@ -920,7 +977,9 @@ app.post("/api/tickets/:id/partial", authMiddleware, async (req, res) => {
 
 app.get("/api/tickets/expenses", authMiddleware, async (req, res) => {
   if (!ensureAdmin(req, res)) return;
-  const logs = await db.collection(COLLECTIONS.EXPENSE_LOGS).find({}).sort({ completedAt: -1 }).toArray();
+  const startDate = parseStartDate(req.query.startDate);
+  const filter = startDate ? { completedAt: { $gte: startDate } } : {};
+  const logs = await db.collection(COLLECTIONS.EXPENSE_LOGS).find(filter).sort({ completedAt: -1 }).toArray();
   res.json(logs);
 });
 
@@ -1100,7 +1159,13 @@ app.post("/api/expense-tickets/branch", authMiddleware, async (req, res) => {
 
 app.get("/api/expense-tickets/logs", authMiddleware, async (req, res) => {
   if (!ensureAdmin(req, res)) return;
-  const logs = await db.collection(COLLECTIONS.EXPENSE_TICKET_LOGS).find({}).sort({ createdAt: -1 }).toArray();
+  const startDate = String(req.query.startDate || "").trim();
+  const filter = startDate ? { date: { $gte: startDate } } : {};
+  const logs = await db
+    .collection(COLLECTIONS.EXPENSE_TICKET_LOGS)
+    .find(filter)
+    .sort({ createdAt: -1 })
+    .toArray();
   res.json(logs);
 });
 
@@ -1111,10 +1176,124 @@ app.get("/api/expense-tickets/branch/history", authMiddleware, async (req, res) 
   const date = String(req.query.date || formatDateLocal(new Date())).trim();
   const logs = await db
     .collection(COLLECTIONS.EXPENSE_TICKET_LOGS)
-    .find({ branchId: req.user.branchId, category: "Branch Expense", date })
+    .find({ branchId: req.user.branchId, category: "Branch Expense", date, status: { $ne: "DELETED" } })
     .sort({ createdAt: -1 })
     .toArray();
   res.json(logs);
+});
+
+app.post("/api/expense-tickets/branch/:id/update", authMiddleware, async (req, res) => {
+  if (req.user?.role !== "BRANCH") {
+    return res.status(403).json({ message: "Branch role required" });
+  }
+  const { id } = req.params;
+  const { items, paymentMethod, amount, date } = req.body || {};
+  const normalizedPayment = String(paymentMethod || "").trim();
+  const normalizedDate = String(date || "").trim();
+  const normalizedAmount = Number(amount || 0);
+  const cleanedItems = Array.isArray(items)
+    ? items
+        .map((row) => ({
+          name: String(row.name || "").trim(),
+          qty: Number(row.qty || 0)
+        }))
+        .filter((row) => row.name && row.qty > 0)
+    : [];
+
+  if (!cleanedItems.length) return res.status(400).json({ message: "At least one item is required" });
+  if (!normalizedPayment) return res.status(400).json({ message: "Payment method is required" });
+  if (!normalizedDate) return res.status(400).json({ message: "Date is required" });
+  if (normalizedAmount <= 0) return res.status(400).json({ message: "Amount must be greater than zero" });
+
+  const ticketsCol = db.collection(COLLECTIONS.EXPENSE_TICKETS);
+  const logsCol = db.collection(COLLECTIONS.EXPENSE_TICKET_LOGS);
+  const ticket = await ticketsCol.findOne({ id, branchId: req.user.branchId, category: "Branch Expense" });
+  if (!ticket) return res.status(404).json({ message: "Expense ticket not found" });
+  if (ticket.status === "DELETED") return res.status(400).json({ message: "Ticket already deleted" });
+
+  const createdAt = new Date(ticket.createdAt || 0).getTime();
+  const elapsedMs = Date.now() - createdAt;
+  if (!(elapsedMs >= 0 && elapsedMs <= 60 * 60 * 1000)) {
+    return res.status(400).json({ message: "Editing window has expired" });
+  }
+
+  const update = {
+    paymentMethod: normalizedPayment,
+    amount: normalizedAmount,
+    date: normalizedDate,
+    items: cleanedItems,
+    updatedAt: new Date().toISOString()
+  };
+
+  await ticketsCol.updateOne({ id }, { $set: update });
+  await logsCol.updateOne(
+    { ticketId: id },
+    {
+      $set: {
+        paymentMethod: update.paymentMethod,
+        amount: update.amount,
+        date: update.date,
+        items: update.items,
+        updatedAt: update.updatedAt
+      }
+    }
+  );
+
+  const branchDoc = await db.collection(COLLECTIONS.BRANCHES).findOne({ id: ticket.branchId });
+  const branchName = branchDoc?.name || ticket.branchId;
+  const itemLines = update.items.map((row) => `- ${row.name} (${row.qty})`).join("\n");
+  const slackMessage = [
+    `Branch expense updated: ${branchName}`,
+    `Date: ${update.date}`,
+    `Amount: Rs ${Number(update.amount || 0).toFixed(2)}`,
+    `Payment: ${update.paymentMethod || "N/A"}`,
+    itemLines ? `Items:\n${itemLines}` : "Items: None",
+    `Ticket ID: ${id}`
+  ].join("\n");
+  sendSlackWebhook(slackMessage);
+
+  res.json({ ok: true });
+});
+
+app.post("/api/expense-tickets/branch/:id/delete", authMiddleware, async (req, res) => {
+  if (req.user?.role !== "BRANCH") {
+    return res.status(403).json({ message: "Branch role required" });
+  }
+  const { id } = req.params;
+  const ticketsCol = db.collection(COLLECTIONS.EXPENSE_TICKETS);
+  const logsCol = db.collection(COLLECTIONS.EXPENSE_TICKET_LOGS);
+  const ticket = await ticketsCol.findOne({ id, branchId: req.user.branchId, category: "Branch Expense" });
+  if (!ticket) return res.status(404).json({ message: "Expense ticket not found" });
+  if (ticket.status === "DELETED") return res.status(400).json({ message: "Ticket already deleted" });
+
+  const createdAt = new Date(ticket.createdAt || 0).getTime();
+  const elapsedMs = Date.now() - createdAt;
+  if (!(elapsedMs >= 0 && elapsedMs <= 60 * 60 * 1000)) {
+    return res.status(400).json({ message: "Delete window has expired" });
+  }
+
+  const nowIso = new Date().toISOString();
+  await ticketsCol.updateOne(
+    { id },
+    { $set: { status: "DELETED", deletedAt: nowIso, deletedBy: req.user.id, updatedAt: nowIso } }
+  );
+  await logsCol.updateOne(
+    { ticketId: id },
+    { $set: { status: "DELETED", deletedAt: nowIso, deletedBy: req.user.id, updatedAt: nowIso } }
+  );
+
+  const branchDoc = await db.collection(COLLECTIONS.BRANCHES).findOne({ id: ticket.branchId });
+  const branchName = branchDoc?.name || ticket.branchId;
+  const slackMessage = [
+    `Branch expense deleted: ${branchName}`,
+    `Date: ${ticket.date}`,
+    `Amount: Rs ${Number(ticket.amount || 0).toFixed(2)}`,
+    `Payment: ${ticket.paymentMethod || "N/A"}`,
+    `Ticket ID: ${id}`
+  ].join("\n");
+  sendSlackWebhook(slackMessage);
+
+  res.json({ ok: true });
 });
 
 app.get("/api/requests/history", authMiddleware, async (req, res) => {
@@ -1405,9 +1584,11 @@ app.post("/api/combined-purchase-queue/submit", authMiddleware, async (req, res)
 
 app.get("/api/combined-purchase-logs", authMiddleware, async (req, res) => {
   if (!ensureAdmin(req, res)) return;
+  const startDate = parseStartDate(req.query.startDate);
+  const filter = startDate ? { createdAt: { $gte: startDate } } : {};
   const logs = await db
     .collection(COLLECTIONS.COMBINED_PURCHASE_LOGS)
-    .find({})
+    .find(filter)
     .sort({ createdAt: -1 })
     .toArray();
   res.json(logs);
@@ -2070,9 +2251,11 @@ app.get("/api/reports/purchase-logs", authMiddleware, async (req, res) => {
   if (req.user.role !== "ADMIN" && req.user.role !== "OPS") {
     return res.status(403).json({ message: "Ops/Admin required" });
   }
+  const startDate = parseStartDate(req.query.startDate);
+  const filter = startDate ? { createdAt: { $gte: startDate } } : {};
   const list = await db
     .collection(COLLECTIONS.PURCHASE_LOGS)
-    .find({})
+    .find(filter)
     .sort({ createdAt: -1 })
     .toArray();
   res.json(list);

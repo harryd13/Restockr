@@ -16,7 +16,8 @@ function Modal({ open, title, children, onClose, actions }) {
         justifyContent: "center",
         alignItems: "center",
         zIndex: 1200,
-        padding: "1rem"
+        padding: "1rem",
+        overflowY: "auto"
       }}
     >
       <div
@@ -27,6 +28,8 @@ function Modal({ open, title, children, onClose, actions }) {
           background: "#fff",
           borderRadius: "1rem",
           width: "min(460px, 100%)",
+          maxHeight: "calc(100vh - 2rem)",
+          overflowY: "auto",
           padding: "1.5rem",
           boxShadow: "0 25px 60px rgba(15, 23, 42, 0.35)"
         }}

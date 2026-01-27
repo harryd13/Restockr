@@ -8,11 +8,13 @@ function DailyRequests() {
   const [quantities, setQuantities] = useState({});
   const [request, setRequest] = useState(null);
   const [requestItems, setRequestItems] = useState([]);
+  const [errorBanner, setErrorBanner] = useState("");
   const [showSubmitModal, setShowSubmitModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const autosaveTimer = useRef(null);
 
-  const hasDraftItems = Object.values(quantities).some(qty => qty > 0);
+  const selectedItemsCount = Object.values(quantities).filter((qty) => qty > 0).length;
+  const hasDraftItems = selectedItemsCount > 0;
 
   useEffect(() => {
     loadMaster();
@@ -49,6 +51,10 @@ function DailyRequests() {
   const changeQty = (itemId, delta) => {
     setQuantities((prev) => {
       const current = prev[itemId] || 0;
+      if (delta > 0 && current === 0 && selectedItemsCount >= 10) {
+        setErrorBanner("Daily requests allow a maximum of 10 items. Submit to create another request for today.");
+        return prev;
+      }
       const next = Math.max(0, current + delta);
       return { ...prev, [itemId]: next };
     });
@@ -57,8 +63,14 @@ function DailyRequests() {
   const saveItems = async () => {
     if (!request) return;
     const payloadItems = composePayload();
-    const res = await axios.post(`/api/daily-requests/${request.id}/items`, { items: payloadItems });
-    setRequestItems(res.data.items);
+    try {
+      const res = await axios.post(`/api/daily-requests/${request.id}/items`, { items: payloadItems });
+      setRequestItems(res.data.items);
+      setErrorBanner("");
+    } catch (err) {
+      const message = err?.response?.data?.message || "Could not save daily request.";
+      setErrorBanner(message);
+    }
   };
 
   const submitRequest = async () => {
@@ -74,6 +86,7 @@ function DailyRequests() {
       await axios.post(`/api/daily-requests/${request.id}/items`, { items: payloadItems });
       await axios.post(`/api/daily-requests/${request.id}/submit`);
       await loadCurrentRequest();
+      setErrorBanner("");
     } finally {
       setIsSubmitting(false);
       setShowSubmitModal(false);
@@ -95,6 +108,11 @@ function DailyRequests() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+      {errorBanner && (
+        <div className="banner banner--warning">
+          <strong>Notice:</strong> {errorBanner}
+        </div>
+      )}
       <section className="section-card">
         <h3 className="section-title">Daily Request</h3>
         {request && (
@@ -152,6 +170,7 @@ function DailyRequests() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
           <h4 className="section-title">Current Day Summary</h4>
           <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+            <span className="stats-pill">Items {selectedItemsCount}/10</span>
             <span className="stats-pill">
               Est. total <strong style={{ color: "#0f172a" }}>Rs {currentTotal.toFixed(2)}</strong>
             </span>
@@ -162,6 +181,9 @@ function DailyRequests() {
             )}
           </div>
         </div>
+        <p className="muted-text" style={{ marginTop: "-0.25rem" }}>
+          Max 10 items per daily request. Submit to start another request for today.
+        </p>
         <div className="table-wrapper">
           <table>
             <thead>

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import BranchRequests from "./pages/BranchRequests";
 import BranchExpenseTickets from "./pages/BranchExpenseTickets";
@@ -12,6 +12,7 @@ import Insights from "./pages/Insights";
 import AdminMasterData from "./pages/AdminMasterData";
 import Tickets from "./pages/Tickets";
 import ExpenseTickets from "./pages/ExpenseTickets";
+import AdminTools from "./pages/AdminTools";
 import LoginScreen from "./components/LoginScreen";
 import TopNav from "./components/TopNav";
 import Modal from "./components/Modal";
@@ -19,6 +20,14 @@ import Modal from "./components/Modal";
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:4000";
 
 axios.defaults.baseURL = API_BASE;
+
+function isWeeklyWindow(date = new Date()) {
+  const now = new Date(date);
+  const day = now.getDay();
+  if (day === 4) return true;
+  if (day === 5 && now.getHours() < 12) return true;
+  return false;
+}
 
 function App() {
   const [user, setUser] = useState(null);
@@ -30,8 +39,22 @@ function App() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [notificationCounts, setNotificationCounts] = useState({ combined: 0, distribution: 0, tickets: 0 });
   const [lastSeenCounts, setLastSeenCounts] = useState({ combined: 0, distribution: 0, tickets: 0 });
+  const [showWeeklyBanner, setShowWeeklyBanner] = useState(false);
+  const weeklyBannerTimer = useRef(null);
+  const [reportStartDate, setReportStartDate] = useState(new Date().toISOString().slice(0, 10));
+  const [reportRefreshKey, setReportRefreshKey] = useState(0);
+  const [weeklyOverride, setWeeklyOverride] = useState(() => localStorage.getItem("foffee_weekly_override") === "true");
   const allowWeeklyAnyDay = String(import.meta.env.VITE_WEEKLY_ALLOW_ANY_DAY || "").toLowerCase() === "true";
-  const weeklyEnabled = allowWeeklyAnyDay || new Date().getDay() === 4;
+  const weeklyEnabled = allowWeeklyAnyDay || weeklyOverride || isWeeklyWindow();
+
+  const clearAuthState = () => {
+    setUser(null);
+    setToken("");
+    setNotificationCounts({ combined: 0, distribution: 0, tickets: 0 });
+    setLastSeenCounts({ combined: 0, distribution: 0, tickets: 0 });
+    delete axios.defaults.headers.common["Authorization"];
+    localStorage.removeItem("foffee_auth");
+  };
 
   useEffect(() => {
     const stored = localStorage.getItem("foffee_auth");
@@ -54,6 +77,16 @@ function App() {
         localStorage.removeItem("foffee_auth");
       }
     }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem("foffee_weekly_override", String(weeklyOverride));
+  }, [weeklyOverride]);
+
+  useEffect(() => {
+    return () => {
+      if (weeklyBannerTimer.current) clearTimeout(weeklyBannerTimer.current);
+    };
   }, []);
 
   const refreshNotifications = async () => {
@@ -106,11 +139,36 @@ function App() {
     setLastSeenCounts((prev) => ({ ...prev, [tab]: notificationCounts[tab] || 0 }));
   };
 
+  const handleWeeklyTabClick = () => {
+    selectTab("branch");
+    if (!weeklyEnabled) {
+      setShowWeeklyBanner(true);
+      if (weeklyBannerTimer.current) clearTimeout(weeklyBannerTimer.current);
+      weeklyBannerTimer.current = setTimeout(() => setShowWeeklyBanner(false), 5000);
+    }
+  };
+
+  const handleReportsRefresh = (date) => {
+    setReportStartDate(date);
+    setReportRefreshKey((prev) => prev + 1);
+  };
+
+  const handleWeeklyOverride = (value) => {
+    setWeeklyOverride(value);
+  };
+
   useEffect(() => {
     const interceptorId = axios.interceptors.response.use(
       (response) => response,
       (error) => {
         const url = error?.config?.url || "";
+        const status = error?.response?.status;
+        if (status === 401 && !url.includes("/api/login")) {
+          setAppError("");
+          clearAuthState();
+          setLoginError("Session expired. Please sign in again.");
+          return Promise.reject(error);
+        }
         if (!url.includes("/api/login")) {
           const message = error?.response?.data?.message || error?.message || "Something went wrong.";
           setAppError(message);
@@ -152,12 +210,7 @@ function App() {
   };
 
   const logout = () => {
-    setUser(null);
-    setToken("");
-    setNotificationCounts({ combined: 0, distribution: 0, tickets: 0 });
-    setLastSeenCounts({ combined: 0, distribution: 0, tickets: 0 });
-    delete axios.defaults.headers.common["Authorization"];
-    localStorage.removeItem("foffee_auth");
+    clearAuthState();
   };
 
   if (appError) {
@@ -220,10 +273,9 @@ function App() {
               )}
               {user.role === "BRANCH" && (
                 <button
-                  className={`tab ${activeTab === "branch" ? "tab--active" : ""}`}
-                  onClick={() => weeklyEnabled && selectTab("branch")}
-                  disabled={!weeklyEnabled}
-                  title={weeklyEnabled ? "" : "Weekly requests are available on Thursday."}
+                  className={`tab ${activeTab === "branch" ? "tab--active" : ""} ${!weeklyEnabled ? "tab--disabled" : ""}`}
+                  onClick={handleWeeklyTabClick}
+                  aria-disabled={!weeklyEnabled}
                 >
                   Weekly Request
                 </button>
@@ -276,6 +328,11 @@ function App() {
                   Master Data
                 </button>
               )}
+              {user.role === "ADMIN" && (
+                <button className={`tab ${activeTab === "tools" ? "tab--active" : ""}`} onClick={() => selectTab("tools")}>
+                  Tools
+                </button>
+              )}
             </nav>
           }
           rightSlot={
@@ -294,8 +351,17 @@ function App() {
           }
         />
 
+        {showWeeklyBanner && !weeklyEnabled && (
+          <div className="notice-banner" role="status" style={{ marginTop: "1rem" }}>
+            Weekly requests are only allowed on THURSDAY.
+            <button type="button" className="notice-banner__close" onClick={() => setShowWeeklyBanner(false)}>
+              Dismiss
+            </button>
+          </div>
+        )}
+
         <main style={{ marginTop: "1rem" }}>
-          {user.role === "BRANCH" && activeTab === "branch" && <BranchRequests />}
+          {user.role === "BRANCH" && activeTab === "branch" && <BranchRequests allowWeeklyOverride={weeklyOverride} />}
           {user.role === "BRANCH" && activeTab === "daily" && <DailyRequests />}
           {user.role === "BRANCH" && activeTab === "other" && <OtherRequests />}
           {user.role === "BRANCH" && activeTab === "branch-home" && <BranchExpenseTickets />}
@@ -303,14 +369,26 @@ function App() {
           {user.role === "ADMIN" && activeTab === "combined" && <CombinedPurchaseRun onNavigate={selectTab} />}
           {user.role === "ADMIN" && activeTab === "distribution" && <DistributionRun />}
           {user.role === "ADMIN" && activeTab === "inventory" && <CentralInventory />}
-          {user.role === "ADMIN" && activeTab === "tickets" && <Tickets />}
+          {user.role === "ADMIN" && activeTab === "tickets" && (
+            <Tickets reportStartDate={reportStartDate} reportRefreshKey={reportRefreshKey} />
+          )}
           {user.role === "ADMIN" && activeTab === "home" && <ExpenseTickets />}
-          {(user.role === "OPS" || user.role === "ADMIN") && activeTab === "insights" && <Insights />}
+          {(user.role === "OPS" || user.role === "ADMIN") && activeTab === "insights" && (
+            <Insights reportStartDate={reportStartDate} reportRefreshKey={reportRefreshKey} />
+          )}
           {user.role === "ADMIN" && activeTab === "admin" && <AdminMasterData />}
+          {user.role === "ADMIN" && activeTab === "tools" && (
+            <AdminTools
+              reportStartDate={reportStartDate}
+              onRefresh={handleReportsRefresh}
+              allowWeeklyOverride={weeklyOverride}
+              onWeeklyOverrideChange={handleWeeklyOverride}
+            />
+          )}
 
           {activeTab === "main" && (
             <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-              {user.role === "BRANCH" && <BranchRequests />}
+              {user.role === "BRANCH" && <BranchRequests allowWeeklyOverride={weeklyOverride} />}
               {user.role === "BRANCH" && <DailyRequests />}
               {user.role === "BRANCH" && <OtherRequests />}
               {user.role === "OPS" && <OpsPurchaseRun />}
@@ -403,6 +481,16 @@ function App() {
                   >
                     Master Data
                   </button>
+                  <button
+                    type="button"
+                    className={activeTab === "tools" ? "drawer__item drawer__item--active" : "drawer__item"}
+                    onClick={() => {
+                      selectTab("tools");
+                      setDrawerOpen(false);
+                    }}
+                  >
+                    Tools
+                  </button>
                 </>
               )}
               {user.role === "BRANCH" && (
@@ -419,14 +507,14 @@ function App() {
                   </button>
                   <button
                     type="button"
-                    className={activeTab === "branch" ? "drawer__item drawer__item--active" : "drawer__item"}
+                    className={`${activeTab === "branch" ? "drawer__item drawer__item--active" : "drawer__item"} ${
+                      !weeklyEnabled ? "drawer__item--disabled" : ""
+                    }`}
                     onClick={() => {
-                      if (!weeklyEnabled) return;
-                      selectTab("branch");
+                      handleWeeklyTabClick();
                       setDrawerOpen(false);
                     }}
-                    disabled={!weeklyEnabled}
-                    title={weeklyEnabled ? "" : "Weekly requests are available on Thursday."}
+                    aria-disabled={!weeklyEnabled}
                   >
                     Weekly Request
                   </button>

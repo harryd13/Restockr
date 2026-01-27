@@ -10,7 +10,16 @@ const USERS = {
 const ITEM_NAME = "Full Cream Milk 1L";
 const CATEGORY_NAME = "Dairy";
 const allowWeeklyAnyDay = String(process.env.E2E_WEEKLY_ALLOW_ANY_DAY || "").toLowerCase() === "true";
-const weeklyEnabled = allowWeeklyAnyDay || new Date().getDay() === 4;
+
+function isWeeklyWindow(date = new Date()) {
+  const now = new Date(date);
+  const day = now.getDay();
+  if (day === 4) return true;
+  if (day === 5 && now.getHours() < 12) return true;
+  return false;
+}
+
+const weeklyEnabled = allowWeeklyAnyDay || isWeeklyWindow();
 
 async function login(page, { email, password }) {
   await page.goto("/");
@@ -61,7 +70,7 @@ async function submitWeeklyRequest(page) {
 
 test.describe.serial("weekly request flow", () => {
   test("branch weekly request create, autosave, submit, and history", async ({ browser }) => {
-    test.skip(!weeklyEnabled, "Weekly requests enabled only on Thursday or when E2E_WEEKLY_ALLOW_ANY_DAY=true.");
+    test.skip(!weeklyEnabled, "Weekly requests enabled only on Thursday or before 12pm Friday, or when E2E_WEEKLY_ALLOW_ANY_DAY=true.");
     const context = await browser.newContext();
     const page = await context.newPage();
 
@@ -89,7 +98,7 @@ test.describe.serial("weekly request flow", () => {
   });
 
   test("other branches can submit weekly requests", async ({ browser }) => {
-    test.skip(!weeklyEnabled, "Weekly requests enabled only on Thursday or when E2E_WEEKLY_ALLOW_ANY_DAY=true.");
+    test.skip(!weeklyEnabled, "Weekly requests enabled only on Thursday or before 12pm Friday, or when E2E_WEEKLY_ALLOW_ANY_DAY=true.");
     const context = await browser.newContext();
     const page = await context.newPage();
 
@@ -112,7 +121,7 @@ test.describe.serial("weekly request flow", () => {
   });
 
   test("admin sees combined purchase queue and submits purchase", async ({ browser }) => {
-    test.skip(!weeklyEnabled, "Weekly requests enabled only on Thursday or when E2E_WEEKLY_ALLOW_ANY_DAY=true.");
+    test.skip(!weeklyEnabled, "Weekly requests enabled only on Thursday or before 12pm Friday, or when E2E_WEEKLY_ALLOW_ANY_DAY=true.");
     const context = await browser.newContext();
     const page = await context.newPage();
 
@@ -139,7 +148,7 @@ test.describe.serial("weekly request flow", () => {
   });
 
   test("admin finalizes distribution and branch history shows distributed", async ({ browser }) => {
-    test.skip(!weeklyEnabled, "Weekly requests enabled only on Thursday or when E2E_WEEKLY_ALLOW_ANY_DAY=true.");
+    test.skip(!weeklyEnabled, "Weekly requests enabled only on Thursday or before 12pm Friday, or when E2E_WEEKLY_ALLOW_ANY_DAY=true.");
     const adminContext = await browser.newContext();
     const adminPage = await adminContext.newPage();
 

@@ -1,7 +1,15 @@
 import React, { useEffect, useRef, useState } from "react";
 import axios from "axios";
 
-function BranchRequests() {
+function isWeeklyWindow(date = new Date()) {
+  const now = new Date(date);
+  const day = now.getDay();
+  if (day === 4) return true;
+  if (day === 5 && now.getHours() < 12) return true;
+  return false;
+}
+
+function BranchRequests({ allowWeeklyOverride = false }) {
   const [categories, setCategories] = useState([]);
   const [items, setItems] = useState([]);
   const [activeCategory, setActiveCategory] = useState(null);
@@ -15,9 +23,11 @@ function BranchRequests() {
   const [historyStatus, setHistoryStatus] = useState({});
   const [showSubmitModal, setShowSubmitModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showWeeklyBanner, setShowWeeklyBanner] = useState(false);
   const autosaveTimer = useRef(null);
+  const bannerTimer = useRef(null);
   const allowWeeklyAnyDay = String(import.meta.env.VITE_WEEKLY_ALLOW_ANY_DAY || "").toLowerCase() === "true";
-  const weeklyEnabled = allowWeeklyAnyDay || new Date().getDay() === 4;
+  const weeklyEnabled = allowWeeklyAnyDay || allowWeeklyOverride || isWeeklyWindow();
 
   const hasDraftItems = Object.values(quantities).some(qty => qty > 0);
   const historyPageSize = 5;
@@ -26,6 +36,12 @@ function BranchRequests() {
     loadMaster();
     loadCurrentRequest();
     loadHistory();
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (bannerTimer.current) clearTimeout(bannerTimer.current);
+    };
   }, []);
 
   const composePayload = () =>
@@ -129,11 +145,30 @@ function BranchRequests() {
   const historyTotalPages = Math.max(1, Math.ceil(sortedHistory.length / historyPageSize));
   const historyStartIndex = (historyPage - 1) * historyPageSize;
   const pagedHistory = sortedHistory.slice(historyStartIndex, historyStartIndex + historyPageSize);
+  const weeklyStartDisabled = !weeklyEnabled;
+
+  const handleWeeklyStartClick = () => {
+    if (!weeklyStartDisabled) {
+      createCurrentRequest();
+      return;
+    }
+    setShowWeeklyBanner(true);
+    if (bannerTimer.current) clearTimeout(bannerTimer.current);
+    bannerTimer.current = setTimeout(() => setShowWeeklyBanner(false), 5000);
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
       <section className="section-card">
         <h3 className="section-title">Branch Weekly Request</h3>
+        {showWeeklyBanner && weeklyStartDisabled && (
+          <div className="notice-banner notice-banner--warning" role="status">
+            Weekly requests are only allowed on THURSDAY.
+            <button type="button" className="notice-banner__close" onClick={() => setShowWeeklyBanner(false)}>
+              Dismiss
+            </button>
+          </div>
+        )}
         {request ? (
           <p className="muted-text">
             Week starting <strong style={{ color: "#0f172a" }}>{request.weekStartDate}</strong> · Status{" "}
@@ -142,9 +177,16 @@ function BranchRequests() {
         ) : (
           <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", alignItems: "center" }}>
             <p className="muted-text" style={{ margin: 0 }}>
-              {weeklyEnabled ? "No weekly request started for this week." : "Weekly requests are available on Thursday."}
+              {weeklyEnabled
+                ? "No weekly request started for this week."
+                : "Weekly requests are available on Thursday or before 12pm Friday."}
             </p>
-            <button type="button" className="btn btn-primary" onClick={createCurrentRequest} disabled={!weeklyEnabled}>
+            <button
+              type="button"
+              className={`btn btn-primary ${weeklyStartDisabled ? "btn--disabled" : ""}`}
+              onClick={handleWeeklyStartClick}
+              aria-disabled={weeklyStartDisabled}
+            >
               Start weekly request
             </button>
           </div>

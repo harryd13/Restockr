@@ -5,7 +5,7 @@ import Modal from "../components/Modal";
 const ASSIGNEES = ["Vivek", "Harman", "Bhashit"];
 const PAYMENT_METHODS = ["UPI", "Cash", "Paid by assignee"];
 
-function Tickets() {
+function Tickets({ reportStartDate = "", reportRefreshKey = 0 }) {
   const [branches, setBranches] = useState([]);
   const [inventoryMap, setInventoryMap] = useState(new Map());
   const [tickets, setTickets] = useState([]);
@@ -23,13 +23,19 @@ function Tickets() {
   const [editableItems, setEditableItems] = useState([]);
   const [errorBanner, setErrorBanner] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [deleteTicket, setDeleteTicket] = useState(null);
+  const [deleteReason, setDeleteReason] = useState("");
+  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     loadBranches();
     loadTickets();
-    loadExpenses();
     loadInventory();
   }, []);
+
+  useEffect(() => {
+    loadExpenses();
+  }, [reportStartDate, reportRefreshKey]);
 
   const loadBranches = async () => {
     const res = await axios.get("/api/branches");
@@ -48,7 +54,8 @@ function Tickets() {
   };
 
   const loadExpenses = async () => {
-    const res = await axios.get("/api/tickets/expenses");
+    const params = reportStartDate ? { startDate: reportStartDate } : undefined;
+    const res = await axios.get("/api/tickets/expenses", { params });
     setExpenses(res.data || []);
   };
 
@@ -115,6 +122,17 @@ function Tickets() {
   const closeModal = () => {
     if (isSubmitting) return;
     setActiveTicket(null);
+  };
+
+  const openDeleteModal = (ticket) => {
+    setDeleteTicket(ticket);
+    setDeleteReason("");
+  };
+
+  const closeDeleteModal = () => {
+    if (isDeleting) return;
+    setDeleteTicket(null);
+    setDeleteReason("");
   };
 
   const timeSince = (iso) => {
@@ -205,6 +223,19 @@ function Tickets() {
     }
   };
 
+  const confirmDelete = async () => {
+    if (!deleteTicket || !deleteReason) return;
+    try {
+      setIsDeleting(true);
+      await axios.post(`/api/tickets/${deleteTicket.id}/delete`, { reason: deleteReason });
+      setDeleteTicket(null);
+      setDeleteReason("");
+      await loadTickets();
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
       {errorBanner && (
@@ -251,9 +282,14 @@ function Tickets() {
                 {ticketHasRemaining(ticket) && <span className="stats-pill" style={{ marginLeft: "0.5rem" }}>Partial</span>}
                 {ticket.type === "OTHER" && <span className="stats-pill" style={{ marginLeft: "0.5rem" }}>Other</span>}
               </div>
-              <button className="btn btn-primary" type="button" onClick={() => openTicket(ticket)}>
-                More
-              </button>
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                <button className="btn btn-secondary" type="button" onClick={() => openDeleteModal(ticket)}>
+                  Delete
+                </button>
+                <button className="btn btn-primary" type="button" onClick={() => openTicket(ticket)}>
+                  More
+                </button>
+              </div>
             </div>
           ))}
         </div>
@@ -408,6 +444,40 @@ function Tickets() {
           </div>
         )}
       </section>
+
+      <Modal
+        open={!!deleteTicket}
+        title="Delete ticket?"
+        onClose={closeDeleteModal}
+        actions={
+          <>
+            <button type="button" className="btn btn-ghost" onClick={closeDeleteModal} disabled={isDeleting}>
+              Cancel
+            </button>
+            <button type="button" className="btn btn-primary" onClick={confirmDelete} disabled={!deleteReason || isDeleting}>
+              {isDeleting ? "Deleting..." : "Confirm Delete"}
+            </button>
+          </>
+        }
+      >
+        <p className="muted-text" style={{ marginBottom: "1rem" }}>
+          This will remove the ticket from the open list. Please select a reason.
+        </p>
+        <label className="muted-text" htmlFor="delete-reason" style={{ display: "block", marginBottom: "0.4rem" }}>
+          Reason
+        </label>
+        <select
+          id="delete-reason"
+          value={deleteReason}
+          onChange={(e) => setDeleteReason(e.target.value)}
+          style={{ minWidth: 220 }}
+        >
+          <option value="">Select a reason</option>
+          <option value="duplicate">Duplicate</option>
+          <option value="wrong">Wrong</option>
+          <option value="stale">Stale</option>
+        </select>
+      </Modal>
 
       <Modal
         open={!!activeTicket}

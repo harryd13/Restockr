@@ -8,7 +8,7 @@ Validate the end-to-end weekly request flow from branch creation to admin combin
 - Frontend running (default `http://localhost:5173`).
 - Seeded data loaded via `backend/seed.js`.
 - Clean weekly-request-related collections for consistent results.
-- Weekly requests are only enabled on Thursday unless you set test flags (below).
+- Weekly requests are only enabled on Thursday and until 12pm Friday unless you set test flags (below).
 
 ### Suggested DB cleanup (before test runs)
 Use `mongosh` and replace `<db>` with your database name:
@@ -40,7 +40,7 @@ E2E_WEEKLY_ALLOW_ANY_DAY=true npm run test:e2e
 
 Notes:
 - Tests assume a clean DB for the current week.
-- For local testing on non-Thursday days, set these env vars:
+- For local testing outside the Thursday/Friday-morning window, set these env vars:
   - Backend: `WEEKLY_ALLOW_ANY_DAY=true`
   - Frontend: `VITE_WEEKLY_ALLOW_ANY_DAY=true`
   - Playwright: `E2E_WEEKLY_ALLOW_ANY_DAY=true`
@@ -96,9 +96,9 @@ Notes:
 2. Verify requested and approved quantities match the original submission.
 3. Verify status matches distribution state.
 
-### 10) Weekly requests only on Thursday
-1. Open Weekly Request on a non-Thursday day.
-2. Verify the Start weekly request button is disabled and the message says Thursday-only.
+### 10) Weekly requests only on Thursday + Friday morning
+1. Open Weekly Request on a non-Thursday and non-Friday-morning day.
+2. Verify the Start weekly request button is disabled and the message says Thursday or before 12pm Friday.
 3. Set the test flag and repeat to confirm weekly requests can be started on any day in local.
 
 ### 11) Multiple branches submit in same week
@@ -154,7 +154,7 @@ Notes:
 
 ### 22) Week boundary behavior
 1. Submit a request on Wednesday.
-2. Submit a request on Thursday.
+2. Submit a request on Thursday (or Friday before 12pm).
 3. Verify history shows two different week start dates.
 
 ## Automation Coverage

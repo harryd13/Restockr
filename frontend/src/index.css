@@ -134,6 +134,14 @@ body {
   box-shadow: none;
 }
 
+.btn--disabled,
+.btn[aria-disabled="true"] {
+  background: #e2e8f0;
+  color: #64748b;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
 .btn-primary {
   background: #2563eb;
   color: #fff;
@@ -148,6 +156,34 @@ body {
 .btn-ghost {
   background: transparent;
   color: #0f172a;
+}
+
+.notice-banner {
+  margin-top: 0.75rem;
+  background: #fff7ed;
+  color: #9a3412;
+  border: 1px solid #fed7aa;
+  border-radius: 12px;
+  padding: 0.6rem 0.85rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-weight: 600;
+}
+
+.notice-banner--warning {
+  background: #fff7ed;
+  color: #9a3412;
+  border-color: #fed7aa;
+}
+
+.notice-banner__close {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .table-wrapper {
@@ -330,6 +366,14 @@ input[type="date"]:focus {
   color: #1e3a8a;
 }
 
+.drawer__item--disabled,
+.drawer__item[aria-disabled="true"] {
+  background: #f1f5f9;
+  border-color: #e2e8f0;
+  color: #94a3b8;
+  cursor: not-allowed;
+}
+
 .expense-form select {
   padding-right: 2rem;
 }
@@ -382,6 +426,14 @@ input[type="date"]:focus {
 .tab:hover {
   background: #e2e8f0;
   color: #0f172a;
+}
+
+.tab--disabled,
+.tab[aria-disabled="true"] {
+  background: #f1f5f9;
+  color: #94a3b8;
+  cursor: not-allowed;
+  box-shadow: none;
 }
 
 .row-unavailable {

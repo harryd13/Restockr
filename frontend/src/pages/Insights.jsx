@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 
-function Insights() {
+function Insights({ reportStartDate = "", reportRefreshKey = 0 }) {
   const [branches, setBranches] = useState([]);
   const [purchaseLogs, setPurchaseLogs] = useState([]);
   const [combinedLogs, setCombinedLogs] = useState([]);
@@ -18,39 +18,52 @@ function Insights() {
   const [expenseTicketLevel, setExpenseTicketLevel] = useState("");
   const [expenseTicketPage, setExpenseTicketPage] = useState(1);
   const [expandedExpenseTicketId, setExpandedExpenseTicketId] = useState(null);
+  const [dateRangeInitialized, setDateRangeInitialized] = useState(false);
 
   useEffect(() => {
     loadBranches();
-    loadPurchaseLogs();
-    loadCombinedLogs();
-    loadExpenseLogs();
-    loadExpenseTicketLogs();
   }, []);
+
+  useEffect(() => {
+    const start = reportStartDate || "";
+    if (start) {
+      setStartDate(start);
+      setEndDate("");
+    }
+    loadPurchaseLogs(start);
+    loadCombinedLogs(start);
+    loadExpenseLogs(start);
+    loadExpenseTicketLogs(start);
+  }, [reportStartDate, reportRefreshKey]);
 
   const loadBranches = async () => {
     const res = await axios.get("/api/branches");
     setBranches(res.data || []);
   };
 
-  const loadPurchaseLogs = async () => {
-    const res = await axios.get("/api/reports/purchase-logs");
+  const loadPurchaseLogs = async (startDateValue) => {
+    const params = startDateValue ? { startDate: startDateValue } : undefined;
+    const res = await axios.get("/api/reports/purchase-logs", { params });
     setPurchaseLogs(res.data || []);
     setExpandedLogId(null);
     setPurchaseLogsPage(1);
   };
 
-  const loadCombinedLogs = async () => {
-    const res = await axios.get("/api/combined-purchase-logs");
+  const loadCombinedLogs = async (startDateValue) => {
+    const params = startDateValue ? { startDate: startDateValue } : undefined;
+    const res = await axios.get("/api/combined-purchase-logs", { params });
     setCombinedLogs(res.data || []);
   };
 
-  const loadExpenseLogs = async () => {
-    const res = await axios.get("/api/tickets/expenses");
+  const loadExpenseLogs = async (startDateValue) => {
+    const params = startDateValue ? { startDate: startDateValue } : undefined;
+    const res = await axios.get("/api/tickets/expenses", { params });
     setExpenseLogs(res.data || []);
   };
 
-  const loadExpenseTicketLogs = async () => {
-    const res = await axios.get("/api/expense-tickets/logs");
+  const loadExpenseTicketLogs = async (startDateValue) => {
+    const params = startDateValue ? { startDate: startDateValue } : undefined;
+    const res = await axios.get("/api/expense-tickets/logs", { params });
     setExpenseTicketLogs(res.data || []);
   };
 
@@ -72,23 +85,16 @@ function Insights() {
   }, [combinedLogs]);
 
   useEffect(() => {
-    const dates = [];
-    purchaseLogs.forEach((log) => {
-      if (log.createdAt) dates.push(log.createdAt);
-    });
-    expenseLogs.forEach((log) => {
-      if (log.completedAt) dates.push(log.completedAt);
-    });
-    expenseTicketLogs.forEach((log) => {
-      if (log.date) dates.push(log.date);
-    });
-    if (!dates.length) return;
-    const sorted = dates.map((d) => new Date(d)).sort((a, b) => a - b);
-    const minDate = sorted[0].toISOString().slice(0, 10);
-    const maxDate = sorted[sorted.length - 1].toISOString().slice(0, 10);
-    if (!startDate) setStartDate(minDate);
-    if (!endDate) setEndDate(maxDate);
-  }, [purchaseLogs, expenseLogs, expenseTicketLogs, startDate, endDate]);
+    if (dateRangeInitialized) return;
+    const today = new Date();
+    const end = today.toISOString().slice(0, 10);
+    const start = new Date(today);
+    start.setDate(start.getDate() - 6);
+    const startIso = start.toISOString().slice(0, 10);
+    setStartDate(startIso);
+    setEndDate(end);
+    setDateRangeInitialized(true);
+  }, [dateRangeInitialized]);
 
   const branchExpenseTotals = useMemo(() => {
     const start = startDate ? new Date(startDate) : null;
@@ -125,6 +131,7 @@ function Insights() {
     });
 
     expenseTicketLogs.forEach((log) => {
+      if (log.status === "DELETED") return;
       const date = log.date ? new Date(log.date) : null;
       if (start && date && date < start) return;
       if (end && date && date > end) return;
@@ -317,10 +324,16 @@ function Insights() {
             <h4 className="section-title">Branch Expenses</h4>
             <p className="muted-text">Total distributed and daily ticket costs per branch.</p>
           </div>
-          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center" }}>
             <label style={{ fontSize: "0.85rem", color: "#475569", fontWeight: 600, alignSelf: "center" }}>Date range</label>
-            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
-            <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+            <label style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+              <span className="muted-text field-label">From</span>
+              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+              <span className="muted-text field-label">To</span>
+              <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+            </label>
           </div>
         </div>
         <div className="table-wrapper" style={{ marginTop: "1rem" }}>
@@ -471,6 +484,7 @@ function Insights() {
                   <span>
                     {log.category} · {branches.find((b) => b.id === log.branchId)?.name || log.branchId} · {log.date}
                   </span>
+                  {log.status === "DELETED" && <span className="stats-pill">Deleted</span>}
                   <span>Rs {Number(log.amount || 0).toFixed(2)} {isOpen ? "v" : "+"}</span>
                 </button>
                 {isOpen && (
