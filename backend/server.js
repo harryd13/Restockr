@@ -40,7 +40,8 @@ const COLLECTIONS = {
   TICKET_ITEMS: "ticketItems",
   EXPENSE_LOGS: "expenseLogs",
   EXPENSE_TICKETS: "expenseTickets",
-  EXPENSE_TICKET_LOGS: "expenseTicketLogs"
+  EXPENSE_TICKET_LOGS: "expenseTicketLogs",
+  SETTINGS: "settings"
 };
 
 // --- Helpers ---
@@ -89,6 +90,12 @@ const DAILY_MENTIONS = {
 function formatMentions(userIds) {
   if (!userIds || !userIds.length) return "";
   return userIds.map((id) => `<@${id}>`).join(" ");
+}
+
+async function getWeeklyOverrideSetting() {
+  const settingsCol = db.collection(COLLECTIONS.SETTINGS);
+  const doc = await settingsCol.findOne({ key: "weeklyOverride" });
+  return !!doc?.value;
 }
 
 async function sendSlackWebhook(message) {
@@ -381,6 +388,11 @@ app.get("/api/me", authMiddleware, async (req, res) => {
   res.json({ id: user.id, name: user.name, role: user.role, branchId: user.branchId });
 });
 
+app.get("/api/settings/weekly-override", authMiddleware, async (req, res) => {
+  const weeklyOverride = await getWeeklyOverrideSetting();
+  res.json({ weeklyOverride });
+});
+
 app.get("/api/branches", authMiddleware, async (req, res) => {
   const list = await db.collection(COLLECTIONS.BRANCHES).find({}).toArray();
   res.json(list);
@@ -420,7 +432,8 @@ app.post("/api/requests/current", authMiddleware, async (req, res) => {
   if (req.user.role !== "BRANCH") {
     return res.status(403).json({ message: "Branch role required" });
   }
-  if (!ALLOW_WEEKLY_ANY_DAY && !isWeeklyWindow()) {
+  const weeklyOverride = await getWeeklyOverrideSetting();
+  if (!ALLOW_WEEKLY_ANY_DAY && !weeklyOverride && !isWeeklyWindow()) {
     return res.status(400).json({ message: "Weekly requests can only be started on Thursday or before 12pm Friday." });
   }
   const branchId = req.user.branchId;
@@ -2259,6 +2272,18 @@ app.get("/api/reports/purchase-logs", authMiddleware, async (req, res) => {
     .sort({ createdAt: -1 })
     .toArray();
   res.json(list);
+});
+
+app.post("/api/admin/settings/weekly-override", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  const value = !!req.body?.weeklyOverride;
+  const settingsCol = db.collection(COLLECTIONS.SETTINGS);
+  await settingsCol.updateOne(
+    { key: "weeklyOverride" },
+    { $set: { key: "weeklyOverride", value, updatedAt: new Date().toISOString(), updatedBy: req.user.id } },
+    { upsert: true }
+  );
+  res.json({ weeklyOverride: value });
 });
 
 // --- Admin Master Data CRUD ---

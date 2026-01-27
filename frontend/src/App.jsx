@@ -43,7 +43,7 @@ function App() {
   const weeklyBannerTimer = useRef(null);
   const [reportStartDate, setReportStartDate] = useState(new Date().toISOString().slice(0, 10));
   const [reportRefreshKey, setReportRefreshKey] = useState(0);
-  const [weeklyOverride, setWeeklyOverride] = useState(() => localStorage.getItem("foffee_weekly_override") === "true");
+  const [weeklyOverride, setWeeklyOverride] = useState(false);
   const allowWeeklyAnyDay = String(import.meta.env.VITE_WEEKLY_ALLOW_ANY_DAY || "").toLowerCase() === "true";
   const weeklyEnabled = allowWeeklyAnyDay || weeklyOverride || isWeeklyWindow();
 
@@ -65,6 +65,7 @@ function App() {
           setUser(parsed.user);
           setToken(parsed.token);
           axios.defaults.headers.common["Authorization"] = `Bearer ${parsed.token}`;
+          loadWeeklyOverride();
           if (parsed.user?.role === "ADMIN") {
             setActiveTab("home");
           } else if (parsed.user?.role === "BRANCH") {
@@ -79,9 +80,14 @@ function App() {
     }
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem("foffee_weekly_override", String(weeklyOverride));
-  }, [weeklyOverride]);
+  const loadWeeklyOverride = async () => {
+    try {
+      const res = await axios.get("/api/settings/weekly-override");
+      setWeeklyOverride(!!res.data?.weeklyOverride);
+    } catch (err) {
+      // Ignore to avoid blocking UI.
+    }
+  };
 
   useEffect(() => {
     return () => {
@@ -153,8 +159,14 @@ function App() {
     setReportRefreshKey((prev) => prev + 1);
   };
 
-  const handleWeeklyOverride = (value) => {
-    setWeeklyOverride(value);
+  const handleWeeklyOverride = async (value) => {
+    try {
+      const res = await axios.post("/api/admin/settings/weekly-override", { weeklyOverride: value });
+      setWeeklyOverride(!!res.data?.weeklyOverride);
+    } catch (err) {
+      const message = err?.response?.data?.message || "Could not update weekly override.";
+      setAppError(message);
+    }
   };
 
   useEffect(() => {
@@ -193,6 +205,7 @@ function App() {
       setUser(res.data.user);
       setToken(res.data.token);
       axios.defaults.headers.common["Authorization"] = `Bearer ${res.data.token}`;
+      await loadWeeklyOverride();
       localStorage.setItem("foffee_auth", JSON.stringify({ user: res.data.user, token: res.data.token }));
       if (res.data.user?.role === "ADMIN") {
         setActiveTab("home");
