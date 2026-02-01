@@ -1,6 +1,7 @@
 {
   "name": "foffee-inventory-frontend",
   "private": true,
+  "restockrVersion": "1.26.2",
   "version": "1.0.0",
   "scripts": {
     "dev": "vite",

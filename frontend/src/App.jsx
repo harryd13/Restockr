@@ -16,6 +16,7 @@ import AdminTools from "./pages/AdminTools";
 import LoginScreen from "./components/LoginScreen";
 import TopNav from "./components/TopNav";
 import Modal from "./components/Modal";
+import AppFooter from "./components/AppFooter";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:4000";
 
@@ -41,7 +42,7 @@ function App() {
   const [lastSeenCounts, setLastSeenCounts] = useState({ combined: 0, distribution: 0, tickets: 0 });
   const [showWeeklyBanner, setShowWeeklyBanner] = useState(false);
   const weeklyBannerTimer = useRef(null);
-  const [reportStartDate, setReportStartDate] = useState(new Date().toISOString().slice(0, 10));
+  const [reportStartDate, setReportStartDate] = useState("");
   const [reportRefreshKey, setReportRefreshKey] = useState(0);
   const [weeklyOverride, setWeeklyOverride] = useState(false);
   const allowWeeklyAnyDay = String(import.meta.env.VITE_WEEKLY_ALLOW_ANY_DAY || "").toLowerCase() === "true";
@@ -66,6 +67,7 @@ function App() {
           setToken(parsed.token);
           axios.defaults.headers.common["Authorization"] = `Bearer ${parsed.token}`;
           loadWeeklyOverride();
+          loadReportStartDate();
           if (parsed.user?.role === "ADMIN") {
             setActiveTab("home");
           } else if (parsed.user?.role === "BRANCH") {
@@ -154,9 +156,31 @@ function App() {
     }
   };
 
-  const handleReportsRefresh = (date) => {
+  const handleReportsRefresh = async (date) => {
     setReportStartDate(date);
+    try {
+      await axios.post("/api/settings/report-start-date", { reportStartDate: date });
+    } catch (err) {
+      const message = err?.response?.data?.message || "Could not save report start date.";
+      setAppError(message);
+    }
     setReportRefreshKey((prev) => prev + 1);
+  };
+
+  const loadReportStartDate = async () => {
+    try {
+      const res = await axios.get("/api/settings/report-start-date");
+      const saved = res.data?.reportStartDate || "";
+      if (saved) {
+        setReportStartDate(saved);
+        return;
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      setReportStartDate(today);
+      await axios.post("/api/settings/report-start-date", { reportStartDate: today });
+    } catch (err) {
+      // Ignore to avoid blocking UI.
+    }
   };
 
   const handleWeeklyOverride = async (value) => {
@@ -206,6 +230,7 @@ function App() {
       setToken(res.data.token);
       axios.defaults.headers.common["Authorization"] = `Bearer ${res.data.token}`;
       await loadWeeklyOverride();
+      await loadReportStartDate();
       localStorage.setItem("foffee_auth", JSON.stringify({ user: res.data.user, token: res.data.token }));
       if (res.data.user?.role === "ADMIN") {
         setActiveTab("home");
@@ -409,6 +434,7 @@ function App() {
             </div>
           )}
         </main>
+        <AppFooter />
 
         <div className={`drawer-backdrop ${drawerOpen ? "drawer-backdrop--open" : ""}`} onClick={() => setDrawerOpen(false)} role="presentation">
           <div className={`drawer ${drawerOpen ? "drawer--open" : ""}`} onClick={(e) => e.stopPropagation()} role="presentation">

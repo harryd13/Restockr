@@ -3,24 +3,28 @@ import axios from "axios";
 import Modal from "../components/Modal";
 
 const ITEM_SUGGESTIONS = ["Milk", "Pizza Bread", "Garlic Bread", "Ice Cubes"];
-const PAYMENT_METHODS = ["UPI", "Cash", "Paid by assignee"];
+const PAYMENT_METHODS = [
+  { label: "Cash", value: "Cash" },
+  { label: "UPI", value: "UPI" },
+  { label: "Self", value: "Paid by assignee" }
+];
+
+const getTodayIso = () => new Date().toISOString().slice(0, 10);
 
 function BranchExpenseTickets() {
   const [items, setItems] = useState([{ name: "", qty: 1 }]);
   const [paymentMethod, setPaymentMethod] = useState("");
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
   const [amount, setAmount] = useState("");
   const [errorBanner, setErrorBanner] = useState("");
   const [successBanner, setSuccessBanner] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showPaymentHint, setShowPaymentHint] = useState(false);
   const [historyLogs, setHistoryLogs] = useState([]);
   const [historyPage, setHistoryPage] = useState(1);
   const [editTicket, setEditTicket] = useState(null);
   const [editItems, setEditItems] = useState([{ name: "", qty: 1 }]);
   const [editPaymentMethod, setEditPaymentMethod] = useState("");
-  const [editDate, setEditDate] = useState(new Date().toISOString().slice(0, 10));
+  const [editDate, setEditDate] = useState(getTodayIso());
   const [editAmount, setEditAmount] = useState("");
   const [isEditing, setIsEditing] = useState(false);
   const [deleteTicket, setDeleteTicket] = useState(null);
@@ -73,18 +77,32 @@ function BranchExpenseTickets() {
   );
 
   const canSubmit = useMemo(() => {
-    if (!paymentMethod || !date) return false;
+    if (!paymentMethod) return false;
     if (Number(amount || 0) <= 0) return false;
     if (!cleanedItems.length) return false;
     return true;
-  }, [paymentMethod, date, amount, cleanedItems]);
+  }, [paymentMethod, amount, cleanedItems]);
 
   const canEditSubmit = useMemo(() => {
-    if (!editPaymentMethod || !editDate) return false;
+    if (!editPaymentMethod) return false;
     if (Number(editAmount || 0) <= 0) return false;
     if (!cleanedEditItems.length) return false;
     return true;
-  }, [editPaymentMethod, editDate, editAmount, cleanedEditItems]);
+  }, [editPaymentMethod, editAmount, cleanedEditItems]);
+
+  const hasItemInput = useMemo(
+    () => items.some((row) => String(row.name || "").trim().length > 0),
+    [items]
+  );
+
+  const clearForm = () => {
+    setItems([{ name: "", qty: 1 }]);
+    setPaymentMethod("");
+    setAmount("");
+    setShowPaymentHint(false);
+    setErrorBanner("");
+    setSuccessBanner("");
+  };
 
   const submit = async () => {
     setErrorBanner("");
@@ -98,17 +116,16 @@ function BranchExpenseTickets() {
     }
     try {
       setIsSubmitting(true);
+      const today = getTodayIso();
       await axios.post("/api/expense-tickets/branch", {
         items: cleanedItems,
         paymentMethod,
         amount: Number(amount || 0),
-        date
+        date: today
       });
       setSuccessBanner("Expense ticket logged.");
-      setItems([{ name: "", qty: 1 }]);
-      setPaymentMethod("");
-      setAmount("");
-      await loadHistory(date);
+      clearForm();
+      await loadHistory(today);
     } catch (err) {
       setErrorBanner("Could not log expense ticket.");
     } finally {
@@ -137,7 +154,7 @@ function BranchExpenseTickets() {
       Array.isArray(log.items) && log.items.length ? log.items.map((item) => ({ ...item })) : [{ name: "", qty: 1 }]
     );
     setEditPaymentMethod(log.paymentMethod || "");
-    setEditDate(log.date || date);
+    setEditDate(log.date || getTodayIso());
     setEditAmount(String(log.amount ?? ""));
   };
 
@@ -158,7 +175,7 @@ function BranchExpenseTickets() {
   const loadHistory = async (targetDate) => {
     try {
       const res = await axios.get("/api/expense-tickets/branch/history", {
-        params: { date: targetDate || date }
+        params: { date: targetDate || getTodayIso() }
       });
       setHistoryLogs(res.data || []);
       setHistoryPage(1);
@@ -168,8 +185,8 @@ function BranchExpenseTickets() {
   };
 
   useEffect(() => {
-    loadHistory(date);
-  }, [date]);
+    loadHistory(getTodayIso());
+  }, []);
 
   const historyPageSize = 5;
   const historyTotalPages = Math.max(1, Math.ceil(historyLogs.length / historyPageSize));
@@ -286,63 +303,43 @@ function BranchExpenseTickets() {
 
           <label>
             <span className="muted-text field-label">Payment Method</span>
-            <button
-              type="button"
-              className={`btn btn-secondary${showPaymentHint && !paymentMethod ? " field-error" : ""}`}
-              onClick={() => setShowPaymentModal(true)}
-            >
-              {paymentMethod || "Select payment"}
-            </button>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+              {PAYMENT_METHODS.map((method) => (
+                <button
+                  key={method.value}
+                  type="button"
+                  className={paymentMethod === method.value ? "btn btn-primary" : "btn btn-secondary"}
+                  onClick={() => {
+                    setPaymentMethod(method.value);
+                    setShowPaymentHint(false);
+                  }}
+                >
+                  {method.label}
+                </button>
+              ))}
+            </div>
             {showPaymentHint && !paymentMethod && (
               <span className="field-hint field-hint--error">Select payment method first.</span>
             )}
           </label>
 
           <label>
-            <span className="muted-text field-label">Date</span>
-            <input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-          </label>
-
-          <label>
-            <span className="muted-text field-label">TRC (Amount)</span>
+            <span className="muted-text field-label">Amount</span>
             <input className="input" type="number" min={0} value={amount} onChange={(e) => setAmount(e.target.value)} />
           </label>
         </div>
 
-        <div style={{ marginTop: "1rem" }}>
+        <div style={{ marginTop: "1rem", display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
           <button className="btn btn-primary" type="button" onClick={submit} disabled={isSubmitting}>
             {isSubmitting ? "Saving..." : "Submit Ticket"}
           </button>
+          {hasItemInput && (
+            <button className="btn btn-ghost" type="button" onClick={clearForm} disabled={isSubmitting}>
+              Cancel
+            </button>
+          )}
         </div>
       </section>
-
-      <Modal
-        open={showPaymentModal}
-        title="Select payment method"
-        onClose={() => setShowPaymentModal(false)}
-        actions={
-          <button type="button" className="btn btn-ghost" onClick={() => setShowPaymentModal(false)}>
-            Close
-          </button>
-        }
-      >
-        <div style={{ display: "grid", gap: "0.5rem" }}>
-          {PAYMENT_METHODS.map((method) => (
-            <button
-              key={method}
-              type="button"
-              className={method === paymentMethod ? "btn btn-primary" : "btn btn-secondary"}
-              onClick={() => {
-                setPaymentMethod(method);
-                setShowPaymentHint(false);
-                setShowPaymentModal(false);
-              }}
-            >
-              {method}
-            </button>
-          ))}
-        </div>
-      </Modal>
 
       <section className="section-card" style={{ maxWidth: 540, width: "100%" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -350,7 +347,7 @@ function BranchExpenseTickets() {
             <h4 className="section-title">Today&apos;s Expenses</h4>
             <p className="muted-text">History of submitted expense tickets.</p>
           </div>
-          <button className="btn btn-secondary" type="button" onClick={() => loadHistory(date)}>
+          <button className="btn btn-secondary" type="button" onClick={() => loadHistory(getTodayIso())}>
             Refresh
           </button>
         </div>
@@ -465,23 +462,22 @@ function BranchExpenseTickets() {
 
           <label>
             <span className="muted-text field-label">Payment Method</span>
-            <select value={editPaymentMethod} onChange={(e) => setEditPaymentMethod(e.target.value)}>
-              <option value="">Select</option>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
               {PAYMENT_METHODS.map((method) => (
-                <option key={method} value={method}>
-                  {method}
-                </option>
+                <button
+                  key={method.value}
+                  type="button"
+                  className={editPaymentMethod === method.value ? "btn btn-primary" : "btn btn-secondary"}
+                  onClick={() => setEditPaymentMethod(method.value)}
+                >
+                  {method.label}
+                </button>
               ))}
-            </select>
+            </div>
           </label>
 
           <label>
-            <span className="muted-text field-label">Date</span>
-            <input className="input" type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} />
-          </label>
-
-          <label>
-            <span className="muted-text field-label">TRC (Amount)</span>
+            <span className="muted-text field-label">Amount</span>
             <input className="input" type="number" min={0} value={editAmount} onChange={(e) => setEditAmount(e.target.value)} />
           </label>
         </div>

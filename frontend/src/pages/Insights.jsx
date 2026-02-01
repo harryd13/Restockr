@@ -322,9 +322,9 @@ function Insights({ reportStartDate = "", reportRefreshKey = 0 }) {
         <div style={{ display: "flex", flexWrap: "wrap", gap: "1rem", justifyContent: "space-between", alignItems: "center" }}>
           <div>
             <h4 className="section-title">Branch Expenses</h4>
-            <p className="muted-text">Total distributed and daily ticket costs per branch.</p>
+            <p className="muted-text hide-on-mobile">Total distributed and daily ticket costs per branch.</p>
           </div>
-          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center" }}>
+          <div className="date-range-row">
             <label style={{ fontSize: "0.85rem", color: "#475569", fontWeight: 600, alignSelf: "center" }}>Date range</label>
             <label style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
               <span className="muted-text field-label">From</span>

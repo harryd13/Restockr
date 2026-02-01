@@ -1,5 +1,6 @@
 import React from "react";
 import TopNav from "./TopNav";
+import AppFooter from "./AppFooter";
 
 function LoginScreen({ onLogin, isLoggingIn }) {
   const focusLoginForm = () => {
@@ -57,17 +58,6 @@ function LoginScreen({ onLogin, isLoggingIn }) {
             <p style={{ color: "#475569", marginTop: "0.5rem" }}>Sign in with a role-specific account to continue.</p>
           </header>
 
-          <section style={{ marginBottom: "1.5rem", color: "#475569" }}>
-            <strong style={{ display: "block", marginBottom: "0.35rem", color: "#0f172a" }}>Demo credentials</strong>
-            <ul style={{ paddingLeft: "1.25rem", margin: 0, lineHeight: 1.6 }}>
-              <li>Brahmpuri Branch: brahmpuri@foffee.in / branch123</li>
-              <li>Ridhi-Sidhi Branch: ridhi@foffee.in / branch123</li>
-              <li>Rajapark Branch: rajapark@foffee.in / branch123</li>
-              <li>Ops: ops@foffee.in / ops123</li>
-              <li>Admin: admin@foffee.in / admin123</li>
-            </ul>
-          </section>
-
           <form id="login-form" onSubmit={onLogin} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
             <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
               <label style={{ fontSize: "0.85rem", color: "#475569", fontWeight: 600 }}>Email</label>
@@ -115,6 +105,9 @@ function LoginScreen({ onLogin, isLoggingIn }) {
             </button>
           </form>
         </div>
+      </div>
+      <div style={{ padding: "0 2rem 1.5rem" }}>
+        <AppFooter />
       </div>
     </div>
   );

@@ -487,6 +487,44 @@ input[type="date"]:focus {
   border-color: #bbf7d0;
 }
 
+.tickets-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: 1fr;
+}
+
+.ticket-card__actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.ticket-card__btn {
+  padding: 0.45rem 0.75rem;
+  font-size: 0.85rem;
+  min-width: 0;
+}
+
+.date-range-row {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.hide-on-mobile {
+  display: block;
+}
+
+.app-footer {
+  margin-top: 1.5rem;
+  text-align: center;
+  color: #64748b;
+  font-size: 0.85rem;
+  letter-spacing: 0.02em;
+}
+
 .spinner {
   width: 1rem;
   height: 1rem;
@@ -520,9 +558,9 @@ input[type="date"]:focus {
   }
 
   .topnav__left {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.5rem;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.75rem;
     flex: 1;
   }
 
@@ -562,6 +600,35 @@ input[type="date"]:focus {
 
   .weekly-chart__bar {
     flex-basis: 70px;
+  }
+
+  .tickets-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ticket-card__actions {
+    gap: 0.4rem;
+  }
+
+  .ticket-card__btn {
+    padding: 0.4rem 0.65rem;
+    font-size: 0.8rem;
+  }
+
+  .date-range-row {
+    align-items: flex-start;
+  }
+
+  .date-range-row label {
+    width: 100%;
+  }
+
+  .date-range-row input[type="date"] {
+    width: 100%;
+  }
+
+  .hide-on-mobile {
+    display: none;
   }
 
   th,

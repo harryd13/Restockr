@@ -57,20 +57,17 @@ function CentralInventory() {
       )}
 
       <section className="section-card">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.75rem" }}>
           <div>
             <h3 className="section-title">Central Inventory</h3>
-            <p className="muted-text">Live stock available for distribution.</p>
+            <p className="muted-text hide-on-mobile">Live stock available for distribution.</p>
           </div>
-          <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
+          <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
             <span className="stats-pill">
               Total value <strong style={{ color: "#0f172a" }}>Rs {totalValue.toFixed(2)}</strong>
             </span>
             <button type="button" className="btn btn-secondary" onClick={load}>
               Refresh
-            </button>
-            <button type="button" className="btn btn-ghost" onClick={loadLogs}>
-              Refresh Logs
             </button>
           </div>
         </div>
@@ -109,6 +106,9 @@ function CentralInventory() {
             <h4 className="section-title">Central Purchase Logs</h4>
             <p className="muted-text">Latest combined purchase submissions.</p>
           </div>
+          <button type="button" className="btn btn-secondary" onClick={loadLogs}>
+            Refresh
+          </button>
         </div>
         {pagedLogs.length === 0 && <p className="muted-text">No logs available yet.</p>}
         <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>

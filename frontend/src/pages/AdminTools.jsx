@@ -45,6 +45,11 @@ function AdminTools({ reportStartDate, onRefresh, allowWeeklyOverride, onWeeklyO
             Refresh reports
           </button>
         </div>
+        {reportStartDate && (
+          <p className="muted-text" style={{ marginTop: "0.6rem" }}>
+            Last refresh was made for date - {reportStartDate}.
+          </p>
+        )}
         <p className="muted-text" style={{ marginTop: "0.75rem" }}>
           Reports and logs will include data on or after the selected date.
         </p>

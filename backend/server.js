@@ -98,6 +98,17 @@ async function getWeeklyOverrideSetting() {
   return !!doc?.value;
 }
 
+async function getReportStartDateSetting(userId) {
+  if (!userId) return "";
+  const settingsCol = db.collection(COLLECTIONS.SETTINGS);
+  const doc = await settingsCol.findOne({ key: `reportStartDate:${userId}` });
+  return doc?.value || "";
+}
+
+function isValidReportStartDate(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
 async function sendSlackWebhook(message) {
   const webhookUrl = String(process.env.WEBHOOK_URL || "").trim();
   if (!webhookUrl) return;
@@ -391,6 +402,30 @@ app.get("/api/me", authMiddleware, async (req, res) => {
 app.get("/api/settings/weekly-override", authMiddleware, async (req, res) => {
   const weeklyOverride = await getWeeklyOverrideSetting();
   res.json({ weeklyOverride });
+});
+
+app.get("/api/settings/report-start-date", authMiddleware, async (req, res) => {
+  const reportStartDate = await getReportStartDateSetting(req.user?.id);
+  res.json({ reportStartDate });
+});
+
+app.post("/api/settings/report-start-date", authMiddleware, async (req, res) => {
+  const reportStartDate = String(req.body?.reportStartDate || "").trim();
+  if (reportStartDate && !isValidReportStartDate(reportStartDate)) {
+    return res.status(400).json({ message: "reportStartDate must be YYYY-MM-DD" });
+  }
+  const settingsCol = db.collection(COLLECTIONS.SETTINGS);
+  const key = `reportStartDate:${req.user?.id}`;
+  if (!reportStartDate) {
+    await settingsCol.deleteOne({ key });
+    return res.json({ reportStartDate: "" });
+  }
+  await settingsCol.updateOne(
+    { key },
+    { $set: { key, value: reportStartDate, updatedAt: new Date().toISOString(), updatedBy: req.user?.id } },
+    { upsert: true }
+  );
+  res.json({ reportStartDate });
 });
 
 app.get("/api/branches", authMiddleware, async (req, res) => {

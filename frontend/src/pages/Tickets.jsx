@@ -69,7 +69,10 @@ function Tickets({ reportStartDate = "", reportRefreshKey = 0 }) {
     setInventoryMap(map);
   };
 
-  const lookupBranchName = (id) => branches.find((b) => b.id === id)?.name || id;
+  const lookupBranchName = (id) => {
+    const name = branches.find((b) => b.id === id)?.name || id;
+    return name.replace(/^foffee\s+/i, "");
+  };
 
   const ticketsWithItems = useMemo(() => {
     const map = new Map();
@@ -255,7 +258,7 @@ function Tickets({ reportStartDate = "", reportRefreshKey = 0 }) {
           </button>
         </div>
         {ticketsWithItems.length === 0 && <p className="muted-text" style={{ marginTop: "0.75rem" }}>No open tickets.</p>}
-        <div style={{ marginTop: "1rem", display: "grid", gap: "0.75rem" }}>
+        <div className="tickets-grid" style={{ marginTop: "1rem" }}>
           {ticketsWithItems.map((ticket) => (
             <div
               key={ticket.id}
@@ -278,16 +281,16 @@ function Tickets({ reportStartDate = "", reportRefreshKey = 0 }) {
                 </div>
               </div>
               <div className="muted-text">
-                Assignee: {ticket.assignee || "Unassigned"}
-                {ticketHasRemaining(ticket) && <span className="stats-pill" style={{ marginLeft: "0.5rem" }}>Partial</span>}
-                {ticket.type === "OTHER" && <span className="stats-pill" style={{ marginLeft: "0.5rem" }}>Other</span>}
+                {ticketHasRemaining(ticket) && <span className="stats-pill" style={{ marginLeft: "0.5rem" }}>P</span>}
+                {ticket.type === "OTHER" && <span className="stats-pill" style={{ marginLeft: "0.5rem" }}>O</span>}
+                {ticket.assignee && <span style={{ marginLeft: "0.5rem" }}>{ticket.assignee}</span>}
               </div>
-              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-                <button className="btn btn-secondary" type="button" onClick={() => openDeleteModal(ticket)}>
-                  Delete
+              <div className="ticket-card__actions">
+                <button className="btn btn-secondary ticket-card__btn" type="button" onClick={() => openDeleteModal(ticket)}>
+                  DEL
                 </button>
-                <button className="btn btn-primary" type="button" onClick={() => openTicket(ticket)}>
-                  More
+                <button className="btn btn-primary ticket-card__btn" type="button" onClick={() => openTicket(ticket)}>
+                  MORE
                 </button>
               </div>
             </div>
