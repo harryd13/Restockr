@@ -2,9 +2,10 @@ import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import Modal from "../components/Modal";
 
-const CATEGORIES = ["Rent", "Electricity Bill", "Salary", "Food Expense", "Ice Cream", "Other"];
+const CATEGORIES = ["Rent", "Electricity Bill", "Salary", "Food Expense", "Ice Cream", "Other", "Purchase"];
 const ASSIGNEES = ["Vivek", "Harman", "Bhashit"];
 const PAYMENT_METHODS = ["UPI", "Cash", "Paid by assignee"];
+const PAYMENT_OPTIONS = [...PAYMENT_METHODS, "Pending"];
 
 function ExpenseTickets() {
   const [branches, setBranches] = useState([]);
@@ -12,6 +13,7 @@ function ExpenseTickets() {
   const [branchId, setBranchId] = useState("");
   const [assignee, setAssignee] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("");
+  const [status, setStatus] = useState("LOGGED");
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState("");
   const [attachmentName, setAttachmentName] = useState("");
@@ -45,13 +47,16 @@ function ExpenseTickets() {
   const showSource = category === "Food Expense";
   const showNote = category === "Other";
 
+  const isPending = status === "PENDING";
+
   const canSubmit = useMemo(() => {
-    if (!branchId || !assignee || !paymentMethod || !date) return false;
+    if (!branchId || !assignee || !date) return false;
+    if (!isPending && !paymentMethod) return false;
     if (Number(amount || 0) <= 0) return false;
     if (showEmployee && !employeeName.trim()) return false;
     if (showSource && !source.trim()) return false;
     return true;
-  }, [branchId, assignee, paymentMethod, date, amount, showEmployee, employeeName, showSource, source]);
+  }, [branchId, assignee, isPending, paymentMethod, date, amount, showEmployee, employeeName, showSource, source]);
 
   const submit = async () => {
     setErrorBanner("");
@@ -67,6 +72,7 @@ function ExpenseTickets() {
         branchId,
         assignee,
         paymentMethod,
+        status,
         amount: Number(amount || 0),
         date,
         attachmentName,
@@ -78,6 +84,8 @@ function ExpenseTickets() {
       });
       setSuccessBanner("Expense ticket logged.");
       setAmount("");
+      setStatus("LOGGED");
+      setPaymentMethod("");
       setAttachmentName("");
       setAttachmentType("");
       setAttachmentData("");
@@ -125,7 +133,7 @@ function ExpenseTickets() {
 
   const handleKeyDown = (event) => {
     if (event.key !== "Enter") return;
-    if (paymentMethod) return;
+    if (paymentMethod || isPending) return;
     event.preventDefault();
     setShowPaymentHint(true);
   };
@@ -173,12 +181,12 @@ function ExpenseTickets() {
             <span className="muted-text field-label">Payment Method</span>
             <button
               type="button"
-              className={`btn btn-secondary${showPaymentHint && !paymentMethod ? " field-error" : ""}`}
+              className={`btn btn-secondary${showPaymentHint && !paymentMethod && !isPending ? " field-error" : ""}`}
               onClick={() => setShowPaymentModal(true)}
             >
-              {paymentMethod || "Select payment"}
+              {isPending ? "Pending" : paymentMethod || "Select payment"}
             </button>
-            {showPaymentHint && !paymentMethod && (
+            {showPaymentHint && !paymentMethod && !isPending && (
               <span className="field-hint field-hint--error">Select payment method first.</span>
             )}
           </label>
@@ -326,13 +334,19 @@ function ExpenseTickets() {
         }
       >
         <div style={{ display: "grid", gap: "0.5rem" }}>
-          {PAYMENT_METHODS.map((method) => (
+          {PAYMENT_OPTIONS.map((method) => (
             <button
               key={method}
               type="button"
-              className={method === paymentMethod ? "btn btn-primary" : "btn btn-secondary"}
+              className={method === "Pending" ? (isPending ? "btn btn-primary" : "btn btn-secondary") : method === paymentMethod ? "btn btn-primary" : "btn btn-secondary"}
               onClick={() => {
-                setPaymentMethod(method);
+                if (method === "Pending") {
+                  setStatus("PENDING");
+                  setPaymentMethod("");
+                } else {
+                  setStatus("LOGGED");
+                  setPaymentMethod(method);
+                }
                 setShowPaymentHint(false);
                 setShowPaymentModal(false);
               }}

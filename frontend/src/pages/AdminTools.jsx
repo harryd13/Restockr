@@ -1,8 +1,15 @@
 import React, { useEffect, useRef, useState } from "react";
+import axios from "axios";
+import Modal from "../components/Modal";
 
 function AdminTools({ reportStartDate, onRefresh, allowWeeklyOverride, onWeeklyOverrideChange }) {
   const [date, setDate] = useState(reportStartDate || "");
   const [showSuccess, setShowSuccess] = useState(false);
+  const [showFlushModal, setShowFlushModal] = useState(false);
+  const [flushReason, setFlushReason] = useState("");
+  const [flushError, setFlushError] = useState("");
+  const [flushSuccess, setFlushSuccess] = useState("");
+  const [isFlushing, setIsFlushing] = useState(false);
   const bannerTimer = useRef(null);
 
   useEffect(() => {
@@ -23,6 +30,37 @@ function AdminTools({ reportStartDate, onRefresh, allowWeeklyOverride, onWeeklyO
     setShowSuccess(true);
     if (bannerTimer.current) clearTimeout(bannerTimer.current);
     bannerTimer.current = setTimeout(() => setShowSuccess(false), 4000);
+  };
+
+  const openFlushModal = () => {
+    setFlushReason("");
+    setFlushError("");
+    setFlushSuccess("");
+    setShowFlushModal(true);
+  };
+
+  const closeFlushModal = () => {
+    if (isFlushing) return;
+    setShowFlushModal(false);
+  };
+
+  const submitFlush = async () => {
+    if (!flushReason.trim()) {
+      setFlushError("Reason is required.");
+      return;
+    }
+    try {
+      setIsFlushing(true);
+      setFlushError("");
+      const res = await axios.post("/api/central-inventory/flush", { reason: flushReason });
+      setFlushSuccess(`Central inventory flushed (${res.data?.flushed || 0} items).`);
+      setShowFlushModal(false);
+      onRefresh?.(date || "");
+    } catch (err) {
+      setFlushError("Could not flush inventory.");
+    } finally {
+      setIsFlushing(false);
+    }
   };
 
   return (
@@ -67,6 +105,50 @@ function AdminTools({ reportStartDate, onRefresh, allowWeeklyOverride, onWeeklyO
           <span className="muted-text">Weekly requests enabled</span>
         </label>
       </section>
+
+      <section className="section-card" style={{ maxWidth: 560, width: "100%" }}>
+        <h4 className="section-title">Central Inventory</h4>
+        <p className="muted-text">Flush all items from central inventory (manual adjustment log will be created).</p>
+        {flushSuccess && (
+          <div className="banner banner--success" style={{ marginTop: "0.75rem" }}>
+            <strong>Success:</strong> {flushSuccess}
+          </div>
+        )}
+        <div style={{ marginTop: "0.75rem" }}>
+          <button type="button" className="btn btn-primary" onClick={openFlushModal}>
+            Flush Inventory
+          </button>
+        </div>
+      </section>
+
+      <Modal
+        open={showFlushModal}
+        title="Flush Central Inventory?"
+        onClose={closeFlushModal}
+        actions={
+          <>
+            <button type="button" className="btn btn-ghost" onClick={closeFlushModal} disabled={isFlushing}>
+              Cancel
+            </button>
+            <button type="button" className="btn btn-primary" onClick={submitFlush} disabled={isFlushing || !flushReason.trim()}>
+              {isFlushing ? "Flushing..." : "Confirm Flush"}
+            </button>
+          </>
+        }
+      >
+        <p className="muted-text" style={{ marginBottom: "0.75rem" }}>
+          This will remove all items from central inventory. This action is logged as a manual adjustment.
+        </p>
+        {flushError && (
+          <div className="banner banner--warning" style={{ marginBottom: "0.75rem" }}>
+            <strong>Warning:</strong> {flushError}
+          </div>
+        )}
+        <label style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+          <span className="muted-text field-label">Reason</span>
+          <input className="input" type="text" value={flushReason} onChange={(e) => setFlushReason(e.target.value)} />
+        </label>
+      </Modal>
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
+import Modal from "../components/Modal";
 
 function CentralInventory() {
   const [rows, setRows] = useState([]);
@@ -8,6 +9,12 @@ function CentralInventory() {
   const [expandedLogId, setExpandedLogId] = useState(null);
   const [logsPage, setLogsPage] = useState(1);
   const [errorBanner, setErrorBanner] = useState("");
+  const [editRow, setEditRow] = useState(null);
+  const [adjustMode, setAdjustMode] = useState("ADD");
+  const [adjustQty, setAdjustQty] = useState("");
+  const [adjustReason, setAdjustReason] = useState("");
+  const [isAdjusting, setIsAdjusting] = useState(false);
+  const [adjustError, setAdjustError] = useState("");
 
   useEffect(() => {
     load();
@@ -33,6 +40,46 @@ function CentralInventory() {
       setLogsPage(1);
     } catch (err) {
       setErrorBanner("Failed to load combined purchase logs.");
+    }
+  };
+
+  const openAdjustModal = (row) => {
+    setEditRow(row);
+    setAdjustMode("ADD");
+    setAdjustQty("");
+    setAdjustReason("");
+    setAdjustError("");
+  };
+
+  const closeAdjustModal = () => {
+    if (isAdjusting) return;
+    setEditRow(null);
+  };
+
+  const canSubmitAdjust = () => {
+    const qty = Number(adjustQty || 0);
+    if (!adjustReason.trim()) return false;
+    if (adjustMode === "SET") return qty >= 0;
+    return qty > 0;
+  };
+
+  const submitAdjust = async () => {
+    if (!editRow || !canSubmitAdjust()) return;
+    try {
+      setIsAdjusting(true);
+      setAdjustError("");
+      await axios.post("/api/central-inventory/adjust", {
+        itemId: editRow.itemId,
+        mode: adjustMode,
+        quantity: Number(adjustQty || 0),
+        reason: adjustReason
+      });
+      setEditRow(null);
+      await load();
+    } catch (err) {
+      setAdjustError("Could not save adjustment.");
+    } finally {
+      setIsAdjusting(false);
     }
   };
 
@@ -83,6 +130,7 @@ function CentralInventory() {
                 <th>On Hand</th>
                 <th>Value</th>
                 <th>Updated</th>
+                <th>Action</th>
               </tr>
             </thead>
             <tbody>
@@ -93,12 +141,64 @@ function CentralInventory() {
                   <td>{row.onHand}</td>
                   <td>Rs {Number(row.totalValue || 0).toFixed(2)}</td>
                   <td>{row.updatedAt ? new Date(row.updatedAt).toLocaleString() : "-"}</td>
+                  <td>
+                    <button type="button" className="btn btn-secondary" onClick={() => openAdjustModal(row)}>
+                      Edit
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       </section>
+
+      <Modal
+        open={!!editRow}
+        title={editRow ? `${editRow.itemName} · Manual Adjustment` : "Manual Adjustment"}
+        onClose={closeAdjustModal}
+        actions={
+          <>
+            <button type="button" className="btn btn-ghost" onClick={closeAdjustModal} disabled={isAdjusting}>
+              Close
+            </button>
+            <button type="button" className="btn btn-primary" onClick={submitAdjust} disabled={!canSubmitAdjust() || isAdjusting}>
+              {isAdjusting ? "Saving..." : "Save Adjustment"}
+            </button>
+          </>
+        }
+      >
+        {editRow && (
+          <div>
+            <p className="muted-text" style={{ marginBottom: "0.75rem" }}>
+              On hand {editRow.onHand}
+            </p>
+            {adjustError && (
+              <div className="banner banner--warning" style={{ marginBottom: "0.75rem" }}>
+                <strong>Warning:</strong> {adjustError}
+              </div>
+            )}
+            <div style={{ display: "grid", gap: "0.75rem" }}>
+              <label>
+                <span className="muted-text field-label">Adjustment Type</span>
+                <select value={adjustMode} onChange={(e) => setAdjustMode(e.target.value)}>
+                  <option value="ADD">Add</option>
+                  <option value="REMOVE">Remove</option>
+                  <option value="SET">Set Exact</option>
+                </select>
+              </label>
+              <label>
+                <span className="muted-text field-label">Quantity</span>
+                <input className="input" type="number" min={0} value={adjustQty} onChange={(e) => setAdjustQty(e.target.value)} />
+              </label>
+              <label>
+                <span className="muted-text field-label">Reason</span>
+                <input className="input" type="text" value={adjustReason} onChange={(e) => setAdjustReason(e.target.value)} />
+              </label>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       <section className="section-card">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem" }}>

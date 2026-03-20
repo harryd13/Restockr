@@ -7,6 +7,7 @@ function Insights({ reportStartDate = "", reportRefreshKey = 0 }) {
   const [combinedLogs, setCombinedLogs] = useState([]);
   const [expenseLogs, setExpenseLogs] = useState([]);
   const [expenseTicketLogs, setExpenseTicketLogs] = useState([]);
+  const [manualAdjustments, setManualAdjustments] = useState([]);
   const [selectedSeries, setSelectedSeries] = useState("purchases");
   const [expandedLogId, setExpandedLogId] = useState(null);
   const [purchaseLogsPage, setPurchaseLogsPage] = useState(1);
@@ -18,6 +19,7 @@ function Insights({ reportStartDate = "", reportRefreshKey = 0 }) {
   const [expenseTicketLevel, setExpenseTicketLevel] = useState("");
   const [expenseTicketPage, setExpenseTicketPage] = useState(1);
   const [expandedExpenseTicketId, setExpandedExpenseTicketId] = useState(null);
+  const [manualAdjustPage, setManualAdjustPage] = useState(1);
   const [dateRangeInitialized, setDateRangeInitialized] = useState(false);
 
   useEffect(() => {
@@ -34,6 +36,7 @@ function Insights({ reportStartDate = "", reportRefreshKey = 0 }) {
     loadCombinedLogs(start);
     loadExpenseLogs(start);
     loadExpenseTicketLogs(start);
+    loadManualAdjustments(start);
   }, [reportStartDate, reportRefreshKey]);
 
   const loadBranches = async () => {
@@ -65,6 +68,13 @@ function Insights({ reportStartDate = "", reportRefreshKey = 0 }) {
     const params = startDateValue ? { startDate: startDateValue } : undefined;
     const res = await axios.get("/api/expense-tickets/logs", { params });
     setExpenseTicketLogs(res.data || []);
+  };
+
+  const loadManualAdjustments = async (startDateValue) => {
+    const params = startDateValue ? { startDate: startDateValue } : undefined;
+    const res = await axios.get("/api/central-inventory/adjustments", { params });
+    setManualAdjustments(res.data || []);
+    setManualAdjustPage(1);
   };
 
   const branchList = useMemo(() => branches.slice(0, 3), [branches]);
@@ -171,7 +181,12 @@ function Insights({ reportStartDate = "", reportRefreshKey = 0 }) {
         if (expenseTicketAssignee && log.assignee !== expenseTicketAssignee) return false;
         if (expenseTicketPayment && log.paymentMethod !== expenseTicketPayment) return false;
         if (expenseTicketLevel) {
-          const level = (log.category || "") === "Branch Expense" ? "BRANCH" : "ADMIN";
+          const level =
+            (log.category || "") === "Branch Expense"
+              ? "BRANCH"
+              : (log.category || "") === "Purchase"
+              ? "PENDING"
+              : "ADMIN";
           if (level !== expenseTicketLevel) return false;
         }
         return true;
@@ -234,6 +249,18 @@ function Insights({ reportStartDate = "", reportRefreshKey = 0 }) {
   useEffect(() => {
     setPurchaseLogsPage((prev) => Math.min(prev, purchaseLogsTotalPages));
   }, [purchaseLogsTotalPages]);
+
+  const manualAdjustPageSize = 5;
+  const manualAdjustTotalPages = Math.max(1, Math.ceil(manualAdjustments.length / manualAdjustPageSize));
+  const manualAdjustStartIndex = (manualAdjustPage - 1) * manualAdjustPageSize;
+  const pagedManualAdjustments = manualAdjustments.slice(
+    manualAdjustStartIndex,
+    manualAdjustStartIndex + manualAdjustPageSize
+  );
+
+  useEffect(() => {
+    setManualAdjustPage((prev) => Math.min(prev, manualAdjustTotalPages));
+  }, [manualAdjustTotalPages]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
@@ -449,6 +476,7 @@ function Insights({ reportStartDate = "", reportRefreshKey = 0 }) {
             <option value="">Ticket Type</option>
             <option value="ADMIN">Admin Level</option>
             <option value="BRANCH">Branch Level</option>
+            <option value="PENDING">Pending</option>
           </select>
         </div>
         {filteredExpenseTickets.length === 0 && <p className="muted-text" style={{ marginTop: "0.75rem" }}>No expense logs yet.</p>}
@@ -533,6 +561,65 @@ function Insights({ reportStartDate = "", reportRefreshKey = 0 }) {
               className="btn btn-secondary"
               onClick={() => setExpenseTicketPage((prev) => Math.min(expenseTicketTotalPages, prev + 1))}
               disabled={expenseTicketPage === expenseTicketTotalPages}
+            >
+              Next
+            </button>
+          </div>
+        )}
+      </section>
+
+      <section className="section-card">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <h4 className="section-title">Manual Adjustments</h4>
+            <p className="muted-text">Inventory changes recorded outside purchase tickets.</p>
+          </div>
+          <button className="btn btn-secondary" type="button" onClick={loadManualAdjustments}>
+            Refresh
+          </button>
+        </div>
+        {pagedManualAdjustments.length === 0 && <p className="muted-text" style={{ marginTop: "0.75rem" }}>No adjustments logged yet.</p>}
+        <div style={{ marginTop: "1rem", display: "grid", gap: "0.75rem" }}>
+          {pagedManualAdjustments.map((log) => (
+            <div
+              key={log.id}
+              style={{
+                border: "1px solid #e2e8f0",
+                borderRadius: "1rem",
+                padding: "0.75rem 1rem",
+                background: "#f8fafc"
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 600 }}>
+                <span>
+                  {log.itemName} Â· {log.categoryName || "Uncategorized"} Â· {log.mode}
+                </span>
+                <span>{new Date(log.createdAt).toLocaleString()}</span>
+              </div>
+              <div className="muted-text" style={{ marginTop: "0.35rem" }}>
+                Delta {log.delta} Â· Before {log.beforeQty} Â· After {log.afterQty}
+              </div>
+              <div className="muted-text" style={{ marginTop: "0.35rem" }}>
+                Reason: {log.reason || "-"}
+              </div>
+            </div>
+          ))}
+        </div>
+        {manualAdjustments.length > manualAdjustPageSize && (
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem", marginTop: "0.75rem" }}>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setManualAdjustPage((prev) => Math.max(1, prev - 1))}
+              disabled={manualAdjustPage === 1}
+            >
+              Prev
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setManualAdjustPage((prev) => Math.min(manualAdjustTotalPages, prev + 1))}
+              disabled={manualAdjustPage === manualAdjustTotalPages}
             >
               Next
             </button>

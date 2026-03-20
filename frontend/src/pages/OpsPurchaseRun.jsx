@@ -182,7 +182,10 @@ function OpsPurchaseRun() {
     return sorted;
   }, [displayRows, sortConfig]);
 
-  const total = sortedRows.reduce((sum, r) => sum + (r.totalPrice || 0), 0);
+  const total = sortedRows.reduce((sum, r) => {
+    if (r.status === "PAYMENT_PENDING") return sum;
+    return sum + (r.totalPrice || 0);
+  }, 0);
   const allBranchesSelected = branches.length > 0 && selectedBranches.length === branches.length;
   const canFinalize = rows.length > 0 && allBranchesSelected && !isFinalizing;
 
@@ -193,6 +196,12 @@ function OpsPurchaseRun() {
       }
       return { column, direction: "asc" };
     });
+  };
+
+  const formatStatusLabel = (status) => {
+    if (status === "PAYMENT_PENDING") return "Pending";
+    if (status === "UNAVAILABLE") return "Unavailable";
+    return "Available";
   };
 
   const exportPdf = () => {
@@ -221,7 +230,7 @@ function OpsPurchaseRun() {
         r.requestedQty,
         r.approvedQty,
         r.unitPrice,
-        combinedView ? "-" : r.status,
+        combinedView ? "-" : formatStatusLabel(r.status),
         r.totalPrice
       ])
     });
@@ -355,6 +364,7 @@ function OpsPurchaseRun() {
                       <select value={r.status} onChange={(e) => changeRow(r.id, "status", e.target.value)}>
                         <option value="AVAILABLE">Available</option>
                         <option value="UNAVAILABLE">Unavailable</option>
+                        <option value="PAYMENT_PENDING">Pending</option>
                       </select>
                     ) : (
                       "-"

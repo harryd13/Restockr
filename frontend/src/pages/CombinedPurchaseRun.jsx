@@ -51,7 +51,10 @@ function CombinedPurchaseRun({ onNavigate }) {
   };
 
   const total = useMemo(() => {
-    return rows.reduce((sum, r) => sum + (r.approvedQty || 0) * (r.unitPrice || 0), 0);
+    return rows.reduce((sum, r) => {
+      if (r.status === "PAYMENT_PENDING") return sum;
+      return sum + (r.approvedQty || 0) * (r.unitPrice || 0);
+    }, 0);
   }, [rows]);
 
   const addItem = () => {
@@ -91,6 +94,12 @@ function CombinedPurchaseRun({ onNavigate }) {
 
   const canEdit = rows.length > 0;
 
+  const formatStatusLabel = (status) => {
+    if (status === "PAYMENT_PENDING") return "Pending";
+    if (status === "UNAVAILABLE") return "Unavailable";
+    return "Available";
+  };
+
   const exportPdf = () => {
     if (!rows.length) return;
     const doc = new jsPDF();
@@ -107,7 +116,7 @@ function CombinedPurchaseRun({ onNavigate }) {
         r.requestedTotal,
         r.approvedQty,
         r.unitPrice,
-        r.status,
+        formatStatusLabel(r.status),
         (Number(r.approvedQty || 0) * Number(r.unitPrice || 0)).toFixed(2)
       ])
     });
@@ -204,9 +213,10 @@ function CombinedPurchaseRun({ onNavigate }) {
                       <select value={r.status} onChange={(e) => changeRow(r.itemId, "status", e.target.value)}>
                         <option value="AVAILABLE">Available</option>
                         <option value="UNAVAILABLE">Unavailable</option>
+                        <option value="PAYMENT_PENDING">Pending</option>
                       </select>
                     ) : (
-                      r.status
+                      formatStatusLabel(r.status)
                     )}
                   </td>
                   <td>Rs {(Number(r.approvedQty || 0) * Number(r.unitPrice || 0)).toFixed(2)}</td>
@@ -256,6 +266,7 @@ function CombinedPurchaseRun({ onNavigate }) {
             <select value={newItemStatus} onChange={(e) => setNewItemStatus(e.target.value)}>
               <option value="AVAILABLE">Available</option>
               <option value="UNAVAILABLE">Unavailable</option>
+              <option value="PAYMENT_PENDING">Pending</option>
             </select>
             <button type="button" className="btn btn-ghost" onClick={addItem} disabled={!newItemId}>
               Add

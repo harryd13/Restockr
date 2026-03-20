@@ -41,7 +41,8 @@ const COLLECTIONS = {
   EXPENSE_LOGS: "expenseLogs",
   EXPENSE_TICKETS: "expenseTickets",
   EXPENSE_TICKET_LOGS: "expenseTicketLogs",
-  SETTINGS: "settings"
+  SETTINGS: "settings",
+  MANUAL_ADJUSTMENTS: "manualInventoryAdjustments"
 };
 
 // --- Helpers ---
@@ -374,6 +375,7 @@ async function ensureIndexes() {
   await db.collection(COLLECTIONS.EXPENSE_LOGS).createIndex({ createdAt: -1 });
   await db.collection(COLLECTIONS.EXPENSE_TICKETS).createIndex({ createdAt: -1 });
   await db.collection(COLLECTIONS.EXPENSE_TICKET_LOGS).createIndex({ createdAt: -1 });
+  await db.collection(COLLECTIONS.MANUAL_ADJUSTMENTS).createIndex({ createdAt: -1 });
 }
 
 // --- Auth ---
@@ -1032,6 +1034,15 @@ app.get("/api/tickets/expenses", authMiddleware, async (req, res) => {
 });
 
 // --- Expense Tickets ---
+app.get("/api/expense-tickets", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  const status = String(req.query.status || "").trim().toUpperCase();
+  const filter = {};
+  if (status) filter.status = status;
+  const tickets = await db.collection(COLLECTIONS.EXPENSE_TICKETS).find(filter).sort({ createdAt: -1 }).toArray();
+  res.json(tickets);
+});
+
 app.post("/api/expense-tickets", authMiddleware, async (req, res) => {
   if (!ensureAdmin(req, res)) return;
   const {
@@ -1039,6 +1050,7 @@ app.post("/api/expense-tickets", authMiddleware, async (req, res) => {
     branchId,
     assignee,
     paymentMethod,
+    status,
     amount,
     date,
     attachmentName,
@@ -1056,11 +1068,18 @@ app.post("/api/expense-tickets", authMiddleware, async (req, res) => {
   const normalizedPayment = String(paymentMethod || "").trim();
   const normalizedDate = String(date || "").trim();
   const normalizedAmount = Number(amount || 0);
+  const normalizedStatus = String(status || "LOGGED").trim().toUpperCase();
+  const allowedStatuses = ["LOGGED", "PENDING"];
 
   if (!normalizedCategory) return res.status(400).json({ message: "Category is required" });
   if (!normalizedBranchId) return res.status(400).json({ message: "Branch is required" });
   if (!normalizedAssignee) return res.status(400).json({ message: "Assignee is required" });
-  if (!normalizedPayment) return res.status(400).json({ message: "Payment method is required" });
+  if (!allowedStatuses.includes(normalizedStatus)) {
+    return res.status(400).json({ message: "Invalid status" });
+  }
+  if (normalizedStatus !== "PENDING" && !normalizedPayment) {
+    return res.status(400).json({ message: "Payment method is required" });
+  }
   if (!normalizedDate) return res.status(400).json({ message: "Date is required" });
   if (normalizedAmount <= 0) return res.status(400).json({ message: "Amount must be greater than zero" });
 
@@ -1077,7 +1096,8 @@ app.post("/api/expense-tickets", authMiddleware, async (req, res) => {
     ? items
         .map((row) => ({
           name: String(row.name || "").trim(),
-          qty: Number(row.qty || 0)
+          qty: Number(row.qty || 0),
+          unitPrice: Number(row.unitPrice || 0)
         }))
         .filter((row) => row.name && row.qty > 0)
     : [];
@@ -1096,33 +1116,245 @@ app.post("/api/expense-tickets", authMiddleware, async (req, res) => {
     employeeName: String(employeeName || "").trim(),
     source: String(source || "").trim(),
     note: String(note || "").trim(),
-    status: "LOGGED",
+    status: normalizedStatus,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
   await ticketsCol.insertOne(ticket);
 
+  if (normalizedStatus !== "PENDING") {
+    await logsCol.insertOne({
+      id: uuidv4(),
+      ticketId: ticket.id,
+      branchId: ticket.branchId,
+      category: ticket.category,
+      assignee: ticket.assignee,
+      paymentMethod: ticket.paymentMethod,
+      amount: ticket.amount,
+      date: ticket.date,
+      attachmentName: ticket.attachmentName,
+      attachmentType: ticket.attachmentType,
+      attachmentData: ticket.attachmentData,
+      items: ticket.items || [],
+      employeeName: ticket.employeeName,
+      source: ticket.source,
+      note: ticket.note,
+      status: ticket.status,
+      createdAt: ticket.createdAt
+    });
+  }
+
+  res.status(201).json({ ok: true, ticketId: ticket.id });
+});
+
+app.post("/api/expense-tickets/:id/update", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  const { id } = req.params;
+  const {
+    category,
+    branchId,
+    assignee,
+    paymentMethod,
+    amount,
+    date,
+    attachmentName,
+    attachmentType,
+    attachmentData,
+    items,
+    employeeName,
+    source,
+    note
+  } = req.body || {};
+
+  const ticketsCol = db.collection(COLLECTIONS.EXPENSE_TICKETS);
+  const ticket = await ticketsCol.findOne({ id });
+  if (!ticket) return res.status(404).json({ message: "Expense ticket not found" });
+  if (ticket.status === "DELETED") return res.status(400).json({ message: "Ticket already deleted" });
+
+  const normalizedCategory = String(category || "").trim();
+  const normalizedBranchId = String(branchId || "").trim();
+  const normalizedAssignee = String(assignee || "").trim();
+  const normalizedPayment = String(paymentMethod || "").trim();
+  const normalizedDate = String(date || "").trim();
+  const normalizedAmount = Number(amount || 0);
+  const cleanedItems = Array.isArray(items)
+    ? items
+        .map((row) => ({
+          name: String(row.name || "").trim(),
+          qty: Number(row.qty || 0),
+          unitPrice: Number(row.unitPrice || 0)
+        }))
+        .filter((row) => row.name && row.qty > 0)
+    : ticket.items || [];
+
+  if (!normalizedCategory) return res.status(400).json({ message: "Category is required" });
+  if (!normalizedBranchId) return res.status(400).json({ message: "Branch is required" });
+  if (!normalizedAssignee) return res.status(400).json({ message: "Assignee is required" });
+  if (ticket.status !== "PENDING" && !normalizedPayment) {
+    return res.status(400).json({ message: "Payment method is required" });
+  }
+  if (!normalizedDate) return res.status(400).json({ message: "Date is required" });
+  if (normalizedAmount <= 0) return res.status(400).json({ message: "Amount must be greater than zero" });
+
+  if (normalizedCategory === "Salary" && !String(employeeName || "").trim()) {
+    return res.status(400).json({ message: "Employee name is required for Salary" });
+  }
+  if (normalizedCategory === "Food Expense" && !String(source || "").trim()) {
+    return res.status(400).json({ message: "Source is required for Food Expense" });
+  }
+
+  const update = {
+    category: normalizedCategory,
+    branchId: normalizedBranchId,
+    assignee: normalizedAssignee,
+    paymentMethod: normalizedPayment,
+    amount: normalizedAmount,
+    date: normalizedDate,
+    attachmentName: String(attachmentName || "").trim(),
+    attachmentType: String(attachmentType || "").trim(),
+    attachmentData: String(attachmentData || ""),
+    items: cleanedItems,
+    employeeName: String(employeeName || "").trim(),
+    source: String(source || "").trim(),
+    note: String(note || "").trim(),
+    updatedAt: new Date().toISOString()
+  };
+
+  await ticketsCol.updateOne({ id }, { $set: update });
+  res.json({ ok: true });
+});
+
+app.post("/api/expense-tickets/:id/partial", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  const { id } = req.params;
+  const {
+    category,
+    branchId,
+    assignee,
+    paymentMethod,
+    amount,
+    date,
+    attachmentName,
+    attachmentType,
+    attachmentData,
+    items,
+    paidItems,
+    employeeName,
+    source,
+    note,
+    amountPaid
+  } = req.body || {};
+
+  const ticketsCol = db.collection(COLLECTIONS.EXPENSE_TICKETS);
+  const logsCol = db.collection(COLLECTIONS.EXPENSE_TICKET_LOGS);
+  const ticket = await ticketsCol.findOne({ id });
+  if (!ticket) return res.status(404).json({ message: "Expense ticket not found" });
+  if (ticket.status !== "PENDING") return res.status(400).json({ message: "Ticket is not pending" });
+
+  const normalizedCategory = String(category || ticket.category || "").trim();
+  const normalizedBranchId = String(branchId || ticket.branchId || "").trim();
+  const normalizedAssignee = String(assignee || ticket.assignee || "").trim();
+  const normalizedPayment = String(paymentMethod || "").trim();
+  const normalizedDate = String(date || ticket.date || "").trim();
+  const normalizedAmount = Number(amount ?? ticket.amount ?? 0);
+  const normalizedPaid = Number(amountPaid || 0);
+  const cleanedItems = Array.isArray(items)
+    ? items
+        .map((row) => ({
+          name: String(row.name || "").trim(),
+          qty: Number(row.qty || 0),
+          unitPrice: Number(row.unitPrice || 0)
+        }))
+        .filter((row) => row.name && row.qty > 0)
+    : ticket.items || [];
+  const cleanedPaidItems = Array.isArray(paidItems)
+    ? paidItems
+        .map((row) => ({
+          name: String(row.name || "").trim(),
+          qty: Number(row.qty || 0),
+          unitPrice: Number(row.unitPrice || 0)
+        }))
+        .filter((row) => row.name && row.qty > 0)
+    : [];
+
+  if (!normalizedCategory) return res.status(400).json({ message: "Category is required" });
+  if (!normalizedBranchId) return res.status(400).json({ message: "Branch is required" });
+  if (!normalizedAssignee) return res.status(400).json({ message: "Assignee is required" });
+  if (!normalizedPayment) return res.status(400).json({ message: "Payment method is required" });
+  if (!normalizedDate) return res.status(400).json({ message: "Date is required" });
+  if (normalizedAmount <= 0) return res.status(400).json({ message: "Amount must be greater than zero" });
+  if (normalizedPaid <= 0) return res.status(400).json({ message: "Payment amount must be greater than zero" });
+  if (normalizedPaid > normalizedAmount) return res.status(400).json({ message: "Payment exceeds pending amount" });
+
+  if (normalizedCategory === "Salary" && !String(employeeName || ticket.employeeName || "").trim()) {
+    return res.status(400).json({ message: "Employee name is required for Salary" });
+  }
+  if (normalizedCategory === "Food Expense" && !String(source || ticket.source || "").trim()) {
+    return res.status(400).json({ message: "Source is required for Food Expense" });
+  }
+
+  const remainingAmount = Number((normalizedAmount - normalizedPaid).toFixed(2));
+  const nextStatus = remainingAmount > 0 ? "PENDING" : "LOGGED";
+  const nowIso = new Date().toISOString();
+
+  const update = {
+    category: normalizedCategory,
+    branchId: normalizedBranchId,
+    assignee: normalizedAssignee,
+    paymentMethod: normalizedPayment,
+    amount: remainingAmount > 0 ? remainingAmount : 0,
+    date: normalizedDate,
+    attachmentName: String(attachmentName || ticket.attachmentName || "").trim(),
+    attachmentType: String(attachmentType || ticket.attachmentType || "").trim(),
+    attachmentData: String(attachmentData || ticket.attachmentData || ""),
+    items: cleanedItems,
+    employeeName: String(employeeName || ticket.employeeName || "").trim(),
+    source: String(source || ticket.source || "").trim(),
+    note: String(note || ticket.note || "").trim(),
+    status: nextStatus,
+    updatedAt: nowIso,
+    ...(nextStatus === "LOGGED" ? { completedAt: nowIso } : {})
+  };
+
+  await ticketsCol.updateOne({ id }, { $set: update });
+
   await logsCol.insertOne({
     id: uuidv4(),
     ticketId: ticket.id,
-    branchId: ticket.branchId,
-    category: ticket.category,
-    assignee: ticket.assignee,
-    paymentMethod: ticket.paymentMethod,
-    amount: ticket.amount,
-    date: ticket.date,
-    attachmentName: ticket.attachmentName,
-    attachmentType: ticket.attachmentType,
-    attachmentData: ticket.attachmentData,
-    items: ticket.items || [],
-    employeeName: ticket.employeeName,
-    source: ticket.source,
-    note: ticket.note,
-    status: ticket.status,
-    createdAt: ticket.createdAt
+    branchId: update.branchId,
+    category: update.category,
+    assignee: update.assignee,
+    paymentMethod: update.paymentMethod,
+    amount: normalizedPaid,
+    date: update.date,
+    attachmentName: update.attachmentName,
+    attachmentType: update.attachmentType,
+    attachmentData: update.attachmentData,
+    items: cleanedPaidItems.length ? cleanedPaidItems : update.items || [],
+    employeeName: update.employeeName,
+    source: update.source,
+    note: update.note,
+    status: nextStatus === "PENDING" ? "PARTIAL" : "LOGGED",
+    createdAt: nowIso
   });
 
-  res.status(201).json({ ok: true, ticketId: ticket.id });
+  res.json({ ok: true, remainingAmount, status: nextStatus });
+});
+
+app.post("/api/expense-tickets/:id/delete", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  const { id } = req.params;
+  const ticketsCol = db.collection(COLLECTIONS.EXPENSE_TICKETS);
+  const ticket = await ticketsCol.findOne({ id });
+  if (!ticket) return res.status(404).json({ message: "Expense ticket not found" });
+  if (ticket.status !== "PENDING") return res.status(400).json({ message: "Only pending tickets can be deleted" });
+
+  const nowIso = new Date().toISOString();
+  await ticketsCol.updateOne(
+    { id },
+    { $set: { status: "DELETED", deletedAt: nowIso, deletedBy: req.user.id, updatedAt: nowIso } }
+  );
+  res.json({ ok: true });
 });
 
 app.post("/api/expense-tickets/branch", authMiddleware, async (req, res) => {
@@ -1137,7 +1369,8 @@ app.post("/api/expense-tickets/branch", authMiddleware, async (req, res) => {
     ? items
         .map((row) => ({
           name: String(row.name || "").trim(),
-          qty: Number(row.qty || 0)
+          qty: Number(row.qty || 0),
+          unitPrice: Number(row.unitPrice || 0)
         }))
         .filter((row) => row.name && row.qty > 0)
     : [];
@@ -1243,7 +1476,8 @@ app.post("/api/expense-tickets/branch/:id/update", authMiddleware, async (req, r
     ? items
         .map((row) => ({
           name: String(row.name || "").trim(),
-          qty: Number(row.qty || 0)
+          qty: Number(row.qty || 0),
+          unitPrice: Number(row.unitPrice || 0)
         }))
         .filter((row) => row.name && row.qty > 0)
     : [];
@@ -1444,6 +1678,137 @@ app.get("/api/central-inventory", authMiddleware, async (req, res) => {
   res.json({ totalValue, rows });
 });
 
+app.post("/api/central-inventory/adjust", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  const { itemId, mode, quantity, reason } = req.body || {};
+  const normalizedItemId = String(itemId || "").trim();
+  const normalizedMode = String(mode || "").trim().toUpperCase();
+  const normalizedReason = String(reason || "").trim();
+  const normalizedQty = Number(quantity || 0);
+
+  if (!normalizedItemId) return res.status(400).json({ message: "itemId is required" });
+  if (!["ADD", "REMOVE", "SET"].includes(normalizedMode)) {
+    return res.status(400).json({ message: "mode must be ADD, REMOVE, or SET" });
+  }
+  if (!normalizedReason) return res.status(400).json({ message: "Reason is required" });
+  if (normalizedQty <= 0 && normalizedMode !== "SET") {
+    return res.status(400).json({ message: "Quantity must be greater than zero" });
+  }
+  if (normalizedMode === "SET" && normalizedQty < 0) {
+    return res.status(400).json({ message: "Quantity cannot be negative" });
+  }
+
+  const inventoryCol = db.collection(COLLECTIONS.CENTRAL_INVENTORY);
+  const itemsCol = db.collection(COLLECTIONS.ITEMS);
+  const categoriesCol = db.collection(COLLECTIONS.CATEGORIES);
+  const logsCol = db.collection(COLLECTIONS.MANUAL_ADJUSTMENTS);
+
+  const itemDoc = await itemsCol.findOne({ id: normalizedItemId });
+  if (!itemDoc) return res.status(404).json({ message: "Item not found" });
+
+  const existing = await inventoryCol.findOne({ itemId: normalizedItemId });
+  const currentOnHand = Number(existing?.onHand || 0);
+  let nextOnHand = currentOnHand;
+  if (normalizedMode === "ADD") {
+    nextOnHand = currentOnHand + normalizedQty;
+  } else if (normalizedMode === "REMOVE") {
+    nextOnHand = currentOnHand - normalizedQty;
+  } else {
+    nextOnHand = normalizedQty;
+  }
+
+  if (nextOnHand < 0) {
+    return res.status(400).json({ message: "Cannot reduce on-hand below zero" });
+  }
+
+  const nowIso = new Date().toISOString();
+  if (nextOnHand === 0) {
+    await inventoryCol.deleteOne({ itemId: normalizedItemId });
+  } else {
+    await inventoryCol.updateOne(
+      { itemId: normalizedItemId },
+      { $set: { itemId: normalizedItemId, onHand: nextOnHand, updatedAt: nowIso } },
+      { upsert: true }
+    );
+  }
+
+  const categoryDoc = await categoriesCol.findOne({ id: itemDoc.categoryId });
+  const categoryName = categoryDoc?.name || "";
+  const delta = nextOnHand - currentOnHand;
+  await logsCol.insertOne({
+    id: uuidv4(),
+    itemId: normalizedItemId,
+    itemName: itemDoc.name,
+    categoryName,
+    mode: normalizedMode,
+    delta,
+    beforeQty: currentOnHand,
+    afterQty: nextOnHand,
+    reason: normalizedReason,
+    createdAt: nowIso,
+    createdBy: req.user?.id || ""
+  });
+
+  res.json({ ok: true, itemId: normalizedItemId, beforeQty: currentOnHand, afterQty: nextOnHand });
+});
+
+app.get("/api/central-inventory/adjustments", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  const startDate = parseStartDate(req.query.startDate);
+  const filter = startDate ? { createdAt: { $gte: startDate } } : {};
+  const logs = await db
+    .collection(COLLECTIONS.MANUAL_ADJUSTMENTS)
+    .find(filter)
+    .sort({ createdAt: -1 })
+    .toArray();
+  res.json(logs);
+});
+
+app.post("/api/central-inventory/flush", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  const reason = String(req.body?.reason || "").trim();
+  if (!reason) return res.status(400).json({ message: "Reason is required" });
+
+  const inventoryCol = db.collection(COLLECTIONS.CENTRAL_INVENTORY);
+  const itemsCol = db.collection(COLLECTIONS.ITEMS);
+  const categoriesCol = db.collection(COLLECTIONS.CATEGORIES);
+  const logsCol = db.collection(COLLECTIONS.MANUAL_ADJUSTMENTS);
+
+  const inventory = await inventoryCol.find({}).toArray();
+  if (!inventory.length) return res.json({ ok: true, flushed: 0 });
+
+  const itemIds = inventory.map((row) => row.itemId);
+  const masterItems = await itemsCol.find({ id: { $in: itemIds } }).toArray();
+  const categories = await categoriesCol.find({}).toArray();
+  const categoryMap = new Map(categories.map((c) => [c.id, c.name]));
+  const itemMap = new Map(masterItems.map((it) => [it.id, it]));
+  const nowIso = new Date().toISOString();
+
+  const logs = inventory.map((row) => {
+    const item = itemMap.get(row.itemId);
+    const categoryName = item ? categoryMap.get(item.categoryId) || "" : "";
+    const beforeQty = Number(row.onHand || 0);
+    return {
+      id: uuidv4(),
+      itemId: row.itemId,
+      itemName: item?.name || row.itemId,
+      categoryName,
+      mode: "FLUSH",
+      delta: -beforeQty,
+      beforeQty,
+      afterQty: 0,
+      reason,
+      createdAt: nowIso,
+      createdBy: req.user?.id || ""
+    };
+  });
+
+  await inventoryCol.deleteMany({});
+  if (logs.length) await logsCol.insertMany(logs);
+
+  res.json({ ok: true, flushed: logs.length });
+});
+
 app.get("/api/combined-purchase-runs", authMiddleware, async (req, res) => {
   if (!ensureAdmin(req, res)) return;
   const runs = await db
@@ -1488,7 +1853,11 @@ app.get("/api/combined-purchase-queue", authMiddleware, async (req, res) => {
     };
     entry.requestedTotal += Number(row.requestedTotal || 0);
     entry.approvedQty += Number(row.approvedQty || 0);
-    if (row.status === "UNAVAILABLE") entry.status = "UNAVAILABLE";
+    if (row.status === "UNAVAILABLE") {
+      entry.status = "UNAVAILABLE";
+    } else if (row.status === "PAYMENT_PENDING" && entry.status !== "UNAVAILABLE") {
+      entry.status = "PAYMENT_PENDING";
+    }
     if (!entry.unitPrice) entry.unitPrice = row.unitPrice || 0;
     combinedMap.set(row.itemId, entry);
   }
@@ -1505,6 +1874,7 @@ app.post("/api/combined-purchase-queue/submit", authMiddleware, async (req, res)
   const runsCol = db.collection(COLLECTIONS.COMBINED_PURCHASE_RUNS);
   const itemsCol = db.collection(COLLECTIONS.COMBINED_PURCHASE_ITEMS);
   const logsCol = db.collection(COLLECTIONS.COMBINED_PURCHASE_LOGS);
+  const expenseTicketsCol = db.collection(COLLECTIONS.EXPENSE_TICKETS);
   const distRunsCol = db.collection(COLLECTIONS.DISTRIBUTION_RUNS);
   const distItemsCol = db.collection(COLLECTIONS.DISTRIBUTION_ITEMS);
   const reqCol = db.collection(COLLECTIONS.WEEKLY_REQUESTS);
@@ -1521,9 +1891,12 @@ app.post("/api/combined-purchase-queue/submit", authMiddleware, async (req, res)
     requestedTotal: Number(row.requestedTotal || 0),
     approvedQty: Number(row.approvedQty || 0),
     unitPrice: Number(row.unitPrice || 0),
-    status: row.status === "UNAVAILABLE" ? "UNAVAILABLE" : "AVAILABLE"
+    status: row.status === "UNAVAILABLE" ? "UNAVAILABLE" : row.status === "PAYMENT_PENDING" ? "PAYMENT_PENDING" : "AVAILABLE"
   }));
-  const logTotal = logItems.reduce((sum, row) => sum + (row.approvedQty || 0) * (row.unitPrice || 0), 0);
+  const logTotal = logItems.reduce((sum, row) => {
+    if (row.status !== "AVAILABLE") return sum;
+    return sum + (row.approvedQty || 0) * (row.unitPrice || 0);
+  }, 0);
 
   await logsCol.insertOne({
     id: uuidv4(),
@@ -1536,7 +1909,7 @@ app.post("/api/combined-purchase-queue/submit", authMiddleware, async (req, res)
   });
 
   for (const item of logItems) {
-    if (item.status === "AVAILABLE" && item.approvedQty > 0) {
+    if ((item.status === "AVAILABLE" || item.status === "PAYMENT_PENDING") && item.approvedQty > 0) {
       await upsertCentralInventory(item.itemId, item.approvedQty);
     }
   }
@@ -1565,6 +1938,7 @@ app.post("/api/combined-purchase-queue/submit", authMiddleware, async (req, res)
     }
   }
 
+  const pendingTicketsByReq = new Map();
   for (const run of draftRuns) {
     const existingDist = await distRunsCol.findOne({ combinedRunId: run.id });
     if (existingDist) continue;
@@ -1607,6 +1981,15 @@ app.post("/api/combined-purchase-queue/submit", authMiddleware, async (req, res)
       const remaining = availableMap.get(row.itemId) || 0;
       const approvedQty = Math.min(row.requestedQty || 0, remaining);
       availableMap.set(row.itemId, remaining - approvedQty);
+      const isPending = purchaseItem?.status === "PAYMENT_PENDING";
+      if (isPending && approvedQty > 0) {
+        if (!pendingTicketsByReq.has(req.id)) pendingTicketsByReq.set(req.id, []);
+        pendingTicketsByReq.get(req.id).push({
+          name: row.itemName,
+          qty: approvedQty,
+          unitPrice: purchaseItem?.unitPrice || row.unitPrice || 0
+        });
+      }
       distItems.push({
         id: uuidv4(),
         runId: distRun.id,
@@ -1618,11 +2001,47 @@ app.post("/api/combined-purchase-queue/submit", authMiddleware, async (req, res)
         requestedQty: row.requestedQty,
         approvedQty,
         unitPrice: purchaseItem?.unitPrice || row.unitPrice || 0,
-        status: approvedQty > 0 ? "AVAILABLE" : "UNAVAILABLE"
+        status: approvedQty > 0 ? (isPending ? "PAYMENT_PENDING" : "AVAILABLE") : "UNAVAILABLE"
       });
     }
     if (distItems.length) {
       await distItemsCol.insertMany(distItems);
+    }
+  }
+
+  if (pendingTicketsByReq.size) {
+    const nowIso = new Date().toISOString();
+    const pendingTickets = [];
+    for (const [reqId, items] of pendingTicketsByReq.entries()) {
+      const reqObj = await reqCol.findOne({ id: reqId });
+      if (!reqObj) continue;
+      const amount = items.reduce((sum, item) => sum + Number(item.qty || 0) * Number(item.unitPrice || 0), 0);
+      pendingTickets.push({
+        id: uuidv4(),
+        category: "Purchase",
+        branchId: reqObj.branchId,
+        assignee: "",
+        paymentMethod: "",
+        amount: Number(amount || 0),
+        date: reqObj.weekStartDate || formatDateLocal(new Date(reqObj.createdAt || Date.now())),
+        attachmentName: "",
+        attachmentType: "",
+        attachmentData: "",
+        items: items.map((row) => ({
+          name: row.name,
+          qty: Number(row.qty || 0),
+          unitPrice: Number(row.unitPrice || 0)
+        })),
+        employeeName: "",
+        source: "",
+        note: "",
+        status: "PENDING",
+        createdAt: nowIso,
+        updatedAt: nowIso
+      });
+    }
+    if (pendingTickets.length) {
+      await expenseTicketsCol.insertMany(pendingTickets);
     }
   }
 
@@ -1655,7 +2074,9 @@ app.post("/api/combined-purchase-run/:id/items", authMiddleware, async (req, res
     const update = {};
     if (typeof item.approvedQty === "number") update.approvedQty = item.approvedQty;
     if (typeof item.unitPrice === "number") update.unitPrice = item.unitPrice;
-    if (item.status === "AVAILABLE" || item.status === "UNAVAILABLE") update.status = item.status;
+    if (item.status === "AVAILABLE" || item.status === "UNAVAILABLE" || item.status === "PAYMENT_PENDING") {
+      update.status = item.status;
+    }
     if (item.status === "UNAVAILABLE") update.approvedQty = 0;
     if (typeof item.requestedTotal === "number") update.requestedTotal = item.requestedTotal;
     if (Object.keys(update).length) {
@@ -1689,7 +2110,7 @@ app.post("/api/combined-purchase-run/:id/add-item", authMiddleware, async (req, 
     requestedTotal: Number(approvedQty || 0),
     approvedQty: Number(approvedQty || 0),
     unitPrice: typeof unitPrice === "number" ? unitPrice : itemDoc.defaultPrice || 0,
-    status: status === "UNAVAILABLE" ? "UNAVAILABLE" : "AVAILABLE",
+    status: status === "UNAVAILABLE" ? "UNAVAILABLE" : status === "PAYMENT_PENDING" ? "PAYMENT_PENDING" : "AVAILABLE",
     manual: true,
     createdAt: new Date().toISOString()
   };
@@ -1719,7 +2140,10 @@ app.post("/api/combined-purchase-run/:id/submit", authMiddleware, async (req, re
     unitPrice: item.unitPrice,
     status: item.status
   }));
-  const logTotal = logItems.reduce((sum, row) => sum + (row.approvedQty || 0) * (row.unitPrice || 0), 0);
+  const logTotal = logItems.reduce((sum, row) => {
+    if (row.status !== "AVAILABLE") return sum;
+    return sum + (row.approvedQty || 0) * (row.unitPrice || 0);
+  }, 0);
   await logsCol.insertOne({
     id: uuidv4(),
     combinedRunId: run.id,
@@ -1732,7 +2156,7 @@ app.post("/api/combined-purchase-run/:id/submit", authMiddleware, async (req, re
   });
 
   for (const item of items) {
-    if (item.status === "AVAILABLE" && Number(item.approvedQty || 0) > 0) {
+    if ((item.status === "AVAILABLE" || item.status === "PAYMENT_PENDING") && Number(item.approvedQty || 0) > 0) {
       await upsertCentralInventory(item.itemId, Number(item.approvedQty || 0));
     }
   }
@@ -1771,6 +2195,7 @@ app.post("/api/combined-purchase-run/:id/submit", authMiddleware, async (req, re
     }
 
     const distItems = [];
+    const pendingItems = [];
     if (submittedReq) {
       for (const row of reqItems) {
         const purchaseItem = purchaseItemMap.get(row.itemId);
@@ -1795,6 +2220,14 @@ app.post("/api/combined-purchase-run/:id/submit", authMiddleware, async (req, re
         }
         const approvedQty = Math.min(row.requestedQty || 0, remaining);
         availableMap.set(row.itemId, remaining - approvedQty);
+        const isPending = purchaseItem?.status === "PAYMENT_PENDING";
+        if (isPending && approvedQty > 0) {
+          pendingItems.push({
+            name: row.itemName,
+            qty: approvedQty,
+            unitPrice: purchaseItem?.unitPrice || row.unitPrice || 0
+          });
+        }
         distItems.push({
           id: uuidv4(),
           runId: distRun.id,
@@ -1806,12 +2239,39 @@ app.post("/api/combined-purchase-run/:id/submit", authMiddleware, async (req, re
           requestedQty: row.requestedQty,
           approvedQty,
           unitPrice: purchaseItem?.unitPrice || row.unitPrice || 0,
-          status: approvedQty > 0 ? "AVAILABLE" : "UNAVAILABLE"
+          status: approvedQty > 0 ? (isPending ? "PAYMENT_PENDING" : "AVAILABLE") : "UNAVAILABLE"
         });
       }
     }
     if (distItems.length) {
       await distItemsCol.insertMany(distItems);
+    }
+    if (pendingItems.length) {
+      const amount = pendingItems.reduce((sum, item) => sum + Number(item.qty || 0) * Number(item.unitPrice || 0), 0);
+      const nowIso = new Date().toISOString();
+      await expenseTicketsCol.insertOne({
+        id: uuidv4(),
+        category: "Purchase",
+        branchId: submittedReq?.branchId || "",
+        assignee: "",
+        paymentMethod: "",
+        amount: Number(amount || 0),
+        date: submittedReq?.weekStartDate || formatDateLocal(new Date(submittedReq?.createdAt || Date.now())),
+        attachmentName: "",
+        attachmentType: "",
+        attachmentData: "",
+        items: pendingItems.map((row) => ({
+          name: row.name,
+          qty: Number(row.qty || 0),
+          unitPrice: Number(row.unitPrice || 0)
+        })),
+        employeeName: "",
+        source: "",
+        note: "",
+        status: "PENDING",
+        createdAt: nowIso,
+        updatedAt: nowIso
+      });
     }
   }
 
@@ -2136,7 +2596,9 @@ app.post("/api/purchase-run/:id/update-items", authMiddleware, async (req, res) 
     const update = {};
     if (typeof bi.approvedQty === "number") update.approvedQty = bi.approvedQty;
     if (typeof bi.unitPrice === "number") update.unitPrice = bi.unitPrice;
-    if (bi.status === "AVAILABLE" || bi.status === "UNAVAILABLE") update.status = bi.status;
+    if (bi.status === "AVAILABLE" || bi.status === "UNAVAILABLE" || bi.status === "PAYMENT_PENDING") {
+      update.status = bi.status;
+    }
     if (Object.keys(update).length) {
       if (update.approvedQty !== undefined && update.unitPrice !== undefined) {
         update.totalPrice = update.approvedQty * update.unitPrice;
@@ -2163,6 +2625,7 @@ app.post("/api/purchase-run/:id/finalize", authMiddleware, async (req, res) => {
   const requestsCol = db.collection(COLLECTIONS.WEEKLY_REQUESTS);
   const itemsCol = db.collection(COLLECTIONS.WEEKLY_REQUEST_ITEMS);
   const logsCol = db.collection(COLLECTIONS.PURCHASE_LOGS);
+  const expenseTicketsCol = db.collection(COLLECTIONS.EXPENSE_TICKETS);
 
   const reqObj = await requestsCol.findOne({ id });
   if (!reqObj) return res.status(404).json({ message: "Request not found" });
@@ -2173,9 +2636,45 @@ app.post("/api/purchase-run/:id/finalize", authMiddleware, async (req, res) => {
   if (!itemsForReq.length) {
     return res.status(400).json({ message: "Cannot finalize empty purchase list" });
   }
+  const pendingItems = itemsForReq.filter(
+    (row) => row.status === "PAYMENT_PENDING" && Number(row.approvedQty || 0) > 0
+  );
+  if (pendingItems.length) {
+    const pendingAmount = pendingItems.reduce(
+      (sum, row) => sum + (row.totalPrice || (row.approvedQty || 0) * (row.unitPrice || 0)),
+      0
+    );
+    const pendingTicket = {
+      id: uuidv4(),
+      category: "Purchase",
+      branchId: reqObj.branchId,
+      assignee: "",
+      paymentMethod: "",
+      amount: Number(pendingAmount || 0),
+      date: reqObj.weekStartDate || formatDateLocal(new Date(reqObj.createdAt || Date.now())),
+      attachmentName: "",
+      attachmentType: "",
+      attachmentData: "",
+      items: pendingItems.map((row) => ({
+        name: row.itemName,
+        qty: Number(row.approvedQty || 0),
+        unitPrice: Number(row.unitPrice || 0)
+      })),
+      employeeName: "",
+      source: "",
+      note: "",
+      status: "PENDING",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    await expenseTicketsCol.insertOne(pendingTicket);
+  }
   const branchMap = new Map();
   let total = 0;
   for (const row of itemsForReq) {
+    if (row.status === "PAYMENT_PENDING") {
+      continue;
+    }
     total += row.totalPrice || 0;
     if (!branchMap.has(row.branchId)) {
       branchMap.set(row.branchId, { branchId: row.branchId, total: 0, items: [] });
@@ -2217,6 +2716,7 @@ app.post("/api/purchase-run/finalize-multi", authMiddleware, async (req, res) =>
   const requestsCol = db.collection(COLLECTIONS.WEEKLY_REQUESTS);
   const itemsCol = db.collection(COLLECTIONS.WEEKLY_REQUEST_ITEMS);
   const logsCol = db.collection(COLLECTIONS.PURCHASE_LOGS);
+  const expenseTicketsCol = db.collection(COLLECTIONS.EXPENSE_TICKETS);
 
   const reqObjs = await requestsCol.find({ id: { $in: requestIds } }).toArray();
   if (!reqObjs.length) return res.status(404).json({ message: "Requests not found" });
@@ -2232,10 +2732,59 @@ app.post("/api/purchase-run/finalize-multi", authMiddleware, async (req, res) =>
   if (!itemsForReqs.length) {
     return res.status(400).json({ message: "Cannot finalize empty purchase list" });
   }
+  const reqMap = new Map(reqObjs.map((r) => [r.id, r]));
+  const pendingByReq = new Map();
+  for (const row of itemsForReqs) {
+    if (row.status !== "PAYMENT_PENDING") continue;
+    if (Number(row.approvedQty || 0) <= 0) continue;
+    if (!pendingByReq.has(row.requestId)) pendingByReq.set(row.requestId, []);
+    pendingByReq.get(row.requestId).push(row);
+  }
+  if (pendingByReq.size) {
+    const nowIso = new Date().toISOString();
+    const pendingTickets = [];
+    for (const [reqId, pendingItems] of pendingByReq.entries()) {
+      const reqObj = reqMap.get(reqId);
+      if (!reqObj) continue;
+      const pendingAmount = pendingItems.reduce(
+        (sum, row) => sum + (row.totalPrice || (row.approvedQty || 0) * (row.unitPrice || 0)),
+        0
+      );
+      pendingTickets.push({
+        id: uuidv4(),
+        category: "Purchase",
+        branchId: reqObj.branchId,
+        assignee: "",
+        paymentMethod: "",
+        amount: Number(pendingAmount || 0),
+        date: reqObj.weekStartDate || formatDateLocal(new Date(reqObj.createdAt || Date.now())),
+        attachmentName: "",
+        attachmentType: "",
+        attachmentData: "",
+        items: pendingItems.map((row) => ({
+          name: row.itemName,
+          qty: Number(row.approvedQty || 0),
+          unitPrice: Number(row.unitPrice || 0)
+        })),
+        employeeName: "",
+        source: "",
+        note: "",
+        status: "PENDING",
+        createdAt: nowIso,
+        updatedAt: nowIso
+      });
+    }
+    if (pendingTickets.length) {
+      await expenseTicketsCol.insertMany(pendingTickets);
+    }
+  }
 
   const branchMap = new Map();
   let total = 0;
   for (const row of itemsForReqs) {
+    if (row.status === "PAYMENT_PENDING") {
+      continue;
+    }
     total += row.totalPrice || 0;
     if (!branchMap.has(row.branchId)) {
       branchMap.set(row.branchId, { branchId: row.branchId, total: 0, items: [] });
