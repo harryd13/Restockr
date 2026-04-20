@@ -6,6 +6,7 @@ const CATEGORIES = ["Rent", "Electricity Bill", "Salary", "Food Expense", "Ice C
 const ASSIGNEES = ["Vivek", "Harman", "Bhashit"];
 const PAYMENT_METHODS = ["UPI", "Cash", "Paid by assignee"];
 const PAYMENT_OPTIONS = [...PAYMENT_METHODS, "Pending"];
+const EXPENSE_TICKET_PREFILL_KEY = "foffee_expense_ticket_prefill";
 
 function ExpenseTickets() {
   const [branches, setBranches] = useState([]);
@@ -41,6 +42,23 @@ function ExpenseTickets() {
     const res = await axios.get("/api/branches");
     setBranches(res.data || []);
     if (!branchId && res.data?.length) setBranchId(res.data[0].id);
+    try {
+      const raw = localStorage.getItem(EXPENSE_TICKET_PREFILL_KEY);
+      if (!raw) return;
+      const prefill = JSON.parse(raw);
+      setCategory(prefill.category || "Other");
+      setBranchId(prefill.branchId || (res.data?.[0]?.id ?? ""));
+      setAssignee(prefill.assignee || ASSIGNEES[0] || "");
+      setPaymentMethod(prefill.paymentMethod || "");
+      setStatus(prefill.status || "LOGGED");
+      setAmount(prefill.amount != null ? String(prefill.amount) : "");
+      setDate(prefill.date || new Date().toISOString().slice(0, 10));
+      setNote(prefill.note || "");
+      setSuccessBanner(prefill.banner || "Expense ticket draft loaded.");
+      localStorage.removeItem(EXPENSE_TICKET_PREFILL_KEY);
+    } catch (err) {
+      localStorage.removeItem(EXPENSE_TICKET_PREFILL_KEY);
+    }
   };
 
   const showEmployee = category === "Salary";

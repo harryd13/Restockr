@@ -2,6 +2,9 @@ import React, { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import BranchRequests from "./pages/BranchRequests";
 import BranchExpenseTickets from "./pages/BranchExpenseTickets";
+import BranchCashManagement from "./pages/BranchCashManagement";
+import AdminCashManagement from "./pages/AdminCashManagement";
+import AdminCashReports from "./pages/AdminCashReports";
 import DailyRequests from "./pages/DailyRequests";
 import OtherRequests from "./pages/OtherRequests";
 import OpsPurchaseRun from "./pages/OpsPurchaseRun";
@@ -311,6 +314,14 @@ function App() {
               )}
               {user.role === "BRANCH" && (
                 <button
+                  className={`tab ${activeTab === "cash-management" ? "tab--active" : ""}`}
+                  onClick={() => selectTab("cash-management")}
+                >
+                  Cash Management
+                </button>
+              )}
+              {user.role === "BRANCH" && (
+                <button
                   className={`tab ${activeTab === "branch" ? "tab--active" : ""} ${!weeklyEnabled ? "tab--disabled" : ""}`}
                   onClick={handleWeeklyTabClick}
                   aria-disabled={!weeklyEnabled}
@@ -331,6 +342,16 @@ function App() {
               {user.role === "OPS" && (
                 <button className={`tab ${activeTab === "ops" ? "tab--active" : ""}`} onClick={() => selectTab("ops")}>
                   Purchase Run
+                </button>
+              )}
+              {user.role === "ADMIN" && (
+                <button className={`tab ${activeTab === "admin-cash" ? "tab--active" : ""}`} onClick={() => selectTab("admin-cash")}>
+                  Cash Management
+                </button>
+              )}
+              {user.role === "ADMIN" && (
+                <button className={`tab ${activeTab === "cash-reports" ? "tab--active" : ""}`} onClick={() => selectTab("cash-reports")}>
+                  Cash Reports
                 </button>
               )}
               {user.role === "ADMIN" && (
@@ -403,6 +424,9 @@ function App() {
           {user.role === "BRANCH" && activeTab === "daily" && <DailyRequests />}
           {user.role === "BRANCH" && activeTab === "other" && <OtherRequests />}
           {user.role === "BRANCH" && activeTab === "branch-home" && <BranchExpenseTickets />}
+          {user.role === "BRANCH" && activeTab === "cash-management" && <BranchCashManagement />}
+          {user.role === "ADMIN" && activeTab === "admin-cash" && <AdminCashManagement onNavigate={selectTab} />}
+          {user.role === "ADMIN" && activeTab === "cash-reports" && <AdminCashReports />}
           {user.role === "OPS" && activeTab === "ops" && <OpsPurchaseRun />}
           {user.role === "ADMIN" && activeTab === "combined" && <CombinedPurchaseRun onNavigate={selectTab} />}
           {user.role === "ADMIN" && activeTab === "distribution" && <DistributionRun />}
@@ -456,6 +480,26 @@ function App() {
                     }}
                   >
                     Home
+                  </button>
+                  <button
+                    type="button"
+                    className={activeTab === "admin-cash" ? "drawer__item drawer__item--active" : "drawer__item"}
+                    onClick={() => {
+                      selectTab("admin-cash");
+                      setDrawerOpen(false);
+                    }}
+                  >
+                    Cash Management
+                  </button>
+                  <button
+                    type="button"
+                    className={activeTab === "cash-reports" ? "drawer__item drawer__item--active" : "drawer__item"}
+                    onClick={() => {
+                      selectTab("cash-reports");
+                      setDrawerOpen(false);
+                    }}
+                  >
+                    Cash Reports
                   </button>
                   <button
                     type="button"
@@ -543,6 +587,16 @@ function App() {
                     }}
                   >
                     Home
+                  </button>
+                  <button
+                    type="button"
+                    className={activeTab === "cash-management" ? "drawer__item drawer__item--active" : "drawer__item"}
+                    onClick={() => {
+                      selectTab("cash-management");
+                      setDrawerOpen(false);
+                    }}
+                  >
+                    Cash Management
                   </button>
                   <button
                     type="button"

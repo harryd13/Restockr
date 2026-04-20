@@ -16,6 +16,8 @@ app.use(cors());
 app.use(bodyParser.json({ limit: "8mb" }));
 
 let db;
+const IST_OFFSET_MINUTES = 330;
+const IST_OFFSET_MS = IST_OFFSET_MINUTES * 60 * 1000;
 
 const COLLECTIONS = {
   USERS: "users",
@@ -41,6 +43,8 @@ const COLLECTIONS = {
   EXPENSE_LOGS: "expenseLogs",
   EXPENSE_TICKETS: "expenseTickets",
   EXPENSE_TICKET_LOGS: "expenseTicketLogs",
+  CASH_TALLIES: "cashTallies",
+  CASH_REPORTS: "cashReports",
   SETTINGS: "settings",
   MANUAL_ADJUSTMENTS: "manualInventoryAdjustments"
 };
@@ -51,6 +55,27 @@ function formatDateLocal(dateObj) {
   const m = String(dateObj.getMonth() + 1).padStart(2, "0");
   const d = String(dateObj.getDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
+}
+
+function formatShiftedUtcDate(dateObj) {
+  const y = dateObj.getUTCFullYear();
+  const m = String(dateObj.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(dateObj.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function getIstShiftedDate(date = new Date()) {
+  return new Date(date.getTime() + IST_OFFSET_MS);
+}
+
+function getCurrentDateInIST(date = new Date()) {
+  return formatShiftedUtcDate(getIstShiftedDate(date));
+}
+
+function getPreviousDateInIST(date = new Date()) {
+  const shifted = getIstShiftedDate(date);
+  shifted.setUTCDate(shifted.getUTCDate() - 1);
+  return formatShiftedUtcDate(shifted);
 }
 
 function parseStartDate(value) {
@@ -106,6 +131,129 @@ async function getReportStartDateSetting(userId) {
   return doc?.value || "";
 }
 
+async function getInitialCashBalancesSetting() {
+  const settingsCol = db.collection(COLLECTIONS.SETTINGS);
+  const doc = await settingsCol.findOne({ key: "initialCashBalances" });
+  return {
+    cashAccount: Number(doc?.value?.cashAccount || 0),
+    onlineAccount: Number(doc?.value?.onlineAccount || 0)
+  };
+}
+
+function summarizeBranchExpenses(logs = []) {
+  return logs.reduce(
+    (acc, log) => {
+      const amount = Number(log?.amount || 0);
+      const paymentMethod = String(log?.paymentMethod || "").trim();
+      if (amount <= 0) return acc;
+      acc.total += amount;
+      if (paymentMethod === "Cash") acc.cash += amount;
+      else if (paymentMethod === "UPI") acc.online += amount;
+      else acc.other += amount;
+      return acc;
+    },
+    { total: 0, cash: 0, online: 0, other: 0 }
+  );
+}
+
+function summarizeExpenseLogsByBranch(logs = []) {
+  const summaryMap = new Map();
+  logs.forEach((log) => {
+    const branchId = String(log?.branchId || "").trim();
+    if (!branchId) return;
+    const current = summaryMap.get(branchId) || { total: 0, cash: 0, online: 0, other: 0 };
+    const amount = Number(log?.amount || 0);
+    const paymentMethod = String(log?.paymentMethod || "").trim();
+    if (amount > 0) {
+      current.total += amount;
+      if (paymentMethod === "Cash") current.cash += amount;
+      else if (paymentMethod === "UPI") current.online += amount;
+      else current.other += amount;
+    }
+    summaryMap.set(branchId, current);
+  });
+  return summaryMap;
+}
+
+function normalizeBranchIds(value) {
+  if (Array.isArray(value)) {
+    return Array.from(new Set(value.map((entry) => String(entry || "").trim()).filter(Boolean)));
+  }
+  return Array.from(
+    new Set(
+      String(value || "")
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+function buildCashSummaryRows(branches = [], tallies = [], expenseSummaryMap = new Map()) {
+  const tallyMap = new Map(tallies.map((tally) => [tally.branchId, tally]));
+  return branches.map((branch) => {
+    const tally = tallyMap.get(branch.id);
+    const expenseSummary = expenseSummaryMap.get(branch.id) || tally?.expenseSummary || { cash: 0, online: 0, total: 0, other: 0 };
+    const onlineSales = Number(tally?.onlineSales || 0);
+    const cashSales = Number(tally?.cashSales || 0);
+    const onlineExpense = Number(expenseSummary.online || 0);
+    const cashExpense = Number(expenseSummary.cash || 0);
+    const onlinePresent = Number(tally?.onlinePresent || 0);
+    const cashPresent = Number(tally?.cashPresent || 0);
+    return {
+      branchId: branch.id,
+      branchName: branch.name,
+      submitted: !!tally,
+      onlineSales,
+      cashSales,
+      onlineExpense,
+      cashExpense,
+      onlinePresent,
+      cashPresent,
+      calculationDiscrepancyCash: cashSales - (cashExpense + cashPresent),
+      calculationDiscrepancyOnline: onlineSales - (onlineExpense + onlinePresent)
+    };
+  });
+}
+
+function summarizeCashRows(rows = []) {
+  return rows.reduce(
+    (acc, row) => {
+      acc.onlineSales += Number(row.onlineSales || 0);
+      acc.cashSales += Number(row.cashSales || 0);
+      acc.onlineExpense += Number(row.onlineExpense || 0);
+      acc.cashExpense += Number(row.cashExpense || 0);
+      acc.onlinePresent += Number(row.onlinePresent || 0);
+      acc.cashPresent += Number(row.cashPresent || 0);
+      acc.submittedBranches += row.submitted ? 1 : 0;
+      return acc;
+    },
+    {
+      onlineSales: 0,
+      cashSales: 0,
+      onlineExpense: 0,
+      cashExpense: 0,
+      onlinePresent: 0,
+      cashPresent: 0,
+      submittedBranches: 0
+    }
+  );
+}
+
+async function getCashAccountsSummary({ excludeDate = "" } = {}) {
+  const initialBalances = await getInitialCashBalancesSetting();
+  const filter = excludeDate ? { date: { $ne: excludeDate } } : {};
+  const reports = await db.collection(COLLECTIONS.CASH_REPORTS).find(filter).toArray();
+  return reports.reduce(
+    (acc, report) => {
+      acc.cashAccount += Number(report?.verifiedCashPresent || 0);
+      acc.onlineAccount += Number(report?.verifiedOnlinePresent || 0);
+      return acc;
+    },
+    { cashAccount: initialBalances.cashAccount, onlineAccount: initialBalances.onlineAccount }
+  );
+}
+
 function isValidReportStartDate(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
@@ -136,6 +284,204 @@ async function sendDailyWebhook(message) {
   } catch (err) {
     console.error("Daily webhook failed", err?.message || err);
   }
+}
+
+async function sendCashReportWebhook(message) {
+  const webhookUrl = String(process.env.CASH_REPORT_WEBHOOK_URL || "").trim();
+  if (!webhookUrl) return;
+  try {
+    await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: message })
+    });
+  } catch (err) {
+    console.error("Cash report webhook failed", err?.message || err);
+  }
+}
+
+function formatMoney(value) {
+  return `Rs ${Math.round(Number(value || 0))}`;
+}
+
+function getCashReportPageLink() {
+  const configured =
+    String(process.env.CASH_REPORT_PAGE_URL || "").trim() ||
+    String(process.env.FRONTEND_URL || "").trim() ||
+    String(process.env.APP_URL || "").trim();
+  if (configured) return configured;
+  return "http://localhost:5173";
+}
+
+function buildSlackCashDailyMessage(date, reports = [], balances = { onlineAccount: 0, cashAccount: 0 }) {
+  const sortedReports = [...reports].sort((a, b) => String(a.branchName || a.branchId || "").localeCompare(String(b.branchName || b.branchId || "")));
+  const gross = sortedReports.reduce(
+    (acc, report) => {
+      acc.onlineSales += Number(report?.totals?.onlineSales || 0);
+      acc.cashSales += Number(report?.totals?.cashSales || 0);
+      acc.onlineExpense += Number(report?.totals?.onlineExpense || 0);
+      acc.cashExpense += Number(report?.totals?.cashExpense || 0);
+      acc.onlinePresent += Number(report?.totals?.onlinePresent || 0);
+      acc.cashPresent += Number(report?.totals?.cashPresent || 0);
+      acc.onlineDiscrepancy +=
+        Number(report?.calculationDiscrepancyOnline || 0) + Number(report?.verificationDiscrepancyOnline || 0);
+      acc.cashDiscrepancy +=
+        Number(report?.calculationDiscrepancyCash || 0) + Number(report?.verificationDiscrepancyCash || 0);
+      return acc;
+    },
+    {
+      onlineSales: 0,
+      cashSales: 0,
+      onlineExpense: 0,
+      cashExpense: 0,
+      onlinePresent: 0,
+      cashPresent: 0,
+      onlineDiscrepancy: 0,
+      cashDiscrepancy: 0
+    }
+  );
+
+  const formatLine = (label, onlineValue, cashValue) =>
+    `${label.padEnd(6)} O ${formatMoney(onlineValue).padEnd(10)} C ${formatMoney(cashValue)}`;
+
+  const branchSections = sortedReports.map((report) => {
+    const onlineDiscrepancy =
+      Number(report?.calculationDiscrepancyOnline || 0) + Number(report?.verificationDiscrepancyOnline || 0);
+    const cashDiscrepancy =
+      Number(report?.calculationDiscrepancyCash || 0) + Number(report?.verificationDiscrepancyCash || 0);
+    const verificationStatus = report?.verifiedAt
+      ? report?.hasDiscrepancy
+        ? report?.resolutionReason
+          ? `Verified (resolved: ${report.resolutionReason})`
+          : "Verified with discrepancy"
+        : "Verified"
+      : "Pending verification";
+    return [
+      `*${report.branchName || report.branchId}*`,
+      "```",
+      formatLine("Sale", report?.totals?.onlineSales, report?.totals?.cashSales),
+      formatLine("Exp", report?.totals?.onlineExpense, report?.totals?.cashExpense),
+      formatLine("Bal", report?.totals?.onlinePresent, report?.totals?.cashPresent),
+      formatLine("Disc", onlineDiscrepancy, cashDiscrepancy),
+      "```",
+      `_Status: ${verificationStatus}_`
+    ].join("\n");
+  });
+
+  const grossSection = [
+    "*Gross*",
+    "```",
+    formatLine("Sale", gross.onlineSales, gross.cashSales),
+    formatLine("Exp", gross.onlineExpense, gross.cashExpense),
+    formatLine("Bal", gross.onlinePresent, gross.cashPresent),
+    formatLine("Disc", gross.onlineDiscrepancy, gross.cashDiscrepancy),
+    "```"
+  ].join("\n");
+
+  const balanceSection = [
+    "*Balances*",
+    "```",
+    `Online Balance  ${formatMoney(balances.onlineAccount)}`,
+    `Cash Balance    ${formatMoney(balances.cashAccount)}`,
+    "```"
+  ].join("\n");
+
+  return [
+    `*Daily Cash Report*  ${date}`,
+    "_Legend: O = Online, C = Cash, Bal = Reported Balance_",
+    `Cash Reports: ${getCashReportPageLink()} (open the Cash Reports tab)`,
+    ...branchSections,
+    grossSection,
+    balanceSection
+  ].join("\n");
+}
+
+async function buildCashDailyReportsForDate(date) {
+  const branches = await db.collection(COLLECTIONS.BRANCHES).find({}).sort({ name: 1 }).toArray();
+  if (!branches.length) return [];
+  const branchIds = branches.map((branch) => branch.id);
+  const tallies = await db.collection(COLLECTIONS.CASH_TALLIES).find({ date, branchId: { $in: branchIds } }).toArray();
+  const expenseLogs = await db
+    .collection(COLLECTIONS.EXPENSE_TICKET_LOGS)
+    .find({ date, branchId: { $in: branchIds }, status: { $ne: "DELETED" } })
+    .toArray();
+  const reports = await db.collection(COLLECTIONS.CASH_REPORTS).find({ date, branchId: { $in: branchIds } }).toArray();
+  const expenseSummaryMap = summarizeExpenseLogsByBranch(expenseLogs);
+  const reportMap = new Map(reports.map((report) => [report.branchId, report]));
+  return buildCashSummaryRows(branches, tallies, expenseSummaryMap).map((row) => {
+    const report = reportMap.get(row.branchId);
+    return {
+      branchId: row.branchId,
+      branchName: row.branchName,
+      totals: {
+        onlineSales: Number(row.onlineSales || 0),
+        cashSales: Number(row.cashSales || 0),
+        onlineExpense: Number(row.onlineExpense || 0),
+        cashExpense: Number(row.cashExpense || 0),
+        onlinePresent: Number(row.onlinePresent || 0),
+        cashPresent: Number(row.cashPresent || 0)
+      },
+      calculationDiscrepancyCash: Number(row.calculationDiscrepancyCash || 0),
+      calculationDiscrepancyOnline: Number(row.calculationDiscrepancyOnline || 0),
+      verificationDiscrepancyCash: Number(report?.verificationDiscrepancyCash || 0),
+      verificationDiscrepancyOnline: Number(report?.verificationDiscrepancyOnline || 0),
+      verifiedAt: report?.verifiedAt || "",
+      hasDiscrepancy:
+        report?.verifiedAt
+          ? !!report?.hasDiscrepancy
+          : Number(row.calculationDiscrepancyCash || 0) !== 0 || Number(row.calculationDiscrepancyOnline || 0) !== 0,
+      resolutionReason: report?.resolutionReason || ""
+    };
+  });
+}
+
+async function sendCashDailyReportForDate(date, { markAutoSent = false } = {}) {
+  const reports = await buildCashDailyReportsForDate(date);
+  if (!reports.length) {
+    return { ok: false, date, sent: false, reason: "No branches found" };
+  }
+  const balances = await getCashAccountsSummary();
+  const message = buildSlackCashDailyMessage(date, reports, balances);
+  await sendCashReportWebhook(message);
+  if (markAutoSent) {
+    await db.collection(COLLECTIONS.SETTINGS).updateOne(
+      { key: `cashReportAutoSent:${date}` },
+      { $set: { key: `cashReportAutoSent:${date}`, value: true, updatedAt: new Date().toISOString() } },
+      { upsert: true }
+    );
+  }
+  return { ok: true, date, sent: true };
+}
+
+async function runScheduledCashReportIfDue() {
+  const date = getPreviousDateInIST(new Date());
+  const key = `cashReportAutoSent:${date}`;
+  const existing = await db.collection(COLLECTIONS.SETTINGS).findOne({ key });
+  if (existing?.value) return;
+  await sendCashDailyReportForDate(date, { markAutoSent: true });
+}
+
+function getMsUntilNextIstSevenAM(now = new Date()) {
+  const shifted = getIstShiftedDate(now);
+  const next = new Date(shifted);
+  next.setUTCHours(7, 0, 0, 0);
+  if (shifted >= next) {
+    next.setUTCDate(next.getUTCDate() + 1);
+  }
+  return Math.max(1000, next.getTime() - shifted.getTime());
+}
+
+function scheduleCashReportJob() {
+  const delay = getMsUntilNextIstSevenAM(new Date());
+  setTimeout(async () => {
+    try {
+      await runScheduledCashReportIfDue();
+    } catch (err) {
+      console.error("Scheduled cash report failed", err?.message || err);
+    } finally {
+      scheduleCashReportJob();
+    }
+  }, delay);
 }
 
 function authMiddleware(req, res, next) {
@@ -375,6 +721,15 @@ async function ensureIndexes() {
   await db.collection(COLLECTIONS.EXPENSE_LOGS).createIndex({ createdAt: -1 });
   await db.collection(COLLECTIONS.EXPENSE_TICKETS).createIndex({ createdAt: -1 });
   await db.collection(COLLECTIONS.EXPENSE_TICKET_LOGS).createIndex({ createdAt: -1 });
+  await db.collection(COLLECTIONS.CASH_TALLIES).createIndex({ branchId: 1, date: 1 }, { unique: true });
+  await db.collection(COLLECTIONS.CASH_TALLIES).createIndex({ updatedAt: -1 });
+  try {
+    await db.collection(COLLECTIONS.CASH_REPORTS).dropIndex("date_1");
+  } catch (err) {
+    if (err?.codeName !== "IndexNotFound" && err?.codeName !== "NamespaceNotFound" && err?.code !== 26) throw err;
+  }
+  await db.collection(COLLECTIONS.CASH_REPORTS).createIndex({ branchId: 1, date: 1 }, { unique: true });
+  await db.collection(COLLECTIONS.CASH_REPORTS).createIndex({ date: -1, verifiedAt: -1 });
   await db.collection(COLLECTIONS.MANUAL_ADJUSTMENTS).createIndex({ createdAt: -1 });
 }
 
@@ -411,6 +766,12 @@ app.get("/api/settings/report-start-date", authMiddleware, async (req, res) => {
   res.json({ reportStartDate });
 });
 
+app.get("/api/admin/settings/initial-cash-balances", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  const balances = await getInitialCashBalancesSetting();
+  res.json(balances);
+});
+
 app.post("/api/settings/report-start-date", authMiddleware, async (req, res) => {
   const reportStartDate = String(req.body?.reportStartDate || "").trim();
   if (reportStartDate && !isValidReportStartDate(reportStartDate)) {
@@ -428,6 +789,31 @@ app.post("/api/settings/report-start-date", authMiddleware, async (req, res) => 
     { upsert: true }
   );
   res.json({ reportStartDate });
+});
+
+app.post("/api/admin/settings/initial-cash-balances", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  const cashAccount = Number(req.body?.cashAccount);
+  const onlineAccount = Number(req.body?.onlineAccount);
+  if (!Number.isFinite(cashAccount) || cashAccount < 0) {
+    return res.status(400).json({ message: "Cash account must be a valid non-negative number" });
+  }
+  if (!Number.isFinite(onlineAccount) || onlineAccount < 0) {
+    return res.status(400).json({ message: "Online account must be a valid non-negative number" });
+  }
+  await db.collection(COLLECTIONS.SETTINGS).updateOne(
+    { key: "initialCashBalances" },
+    {
+      $set: {
+        key: "initialCashBalances",
+        value: { cashAccount, onlineAccount },
+        updatedAt: new Date().toISOString(),
+        updatedBy: req.user.id
+      }
+    },
+    { upsert: true }
+  );
+  res.json({ cashAccount, onlineAccount });
 });
 
 app.get("/api/branches", authMiddleware, async (req, res) => {
@@ -1576,6 +1962,287 @@ app.post("/api/expense-tickets/branch/:id/delete", authMiddleware, async (req, r
   sendSlackWebhook(slackMessage);
 
   res.json({ ok: true });
+});
+
+app.get("/api/cash-management/branch/today", authMiddleware, async (req, res) => {
+  if (req.user?.role !== "BRANCH") {
+    return res.status(403).json({ message: "Branch role required" });
+  }
+
+  const date = formatDateLocal(new Date());
+  const tally = await db.collection(COLLECTIONS.CASH_TALLIES).findOne({ branchId: req.user.branchId, date });
+  const expenseLogs = await db
+    .collection(COLLECTIONS.EXPENSE_TICKET_LOGS)
+    .find({ branchId: req.user.branchId, category: "Branch Expense", date, status: { $ne: "DELETED" } })
+    .sort({ createdAt: -1 })
+    .toArray();
+
+  res.json({
+    date,
+    tally: tally || null,
+    expenseSummary: summarizeBranchExpenses(expenseLogs)
+  });
+});
+
+app.post("/api/cash-management/branch", authMiddleware, async (req, res) => {
+  if (req.user?.role !== "BRANCH") {
+    return res.status(403).json({ message: "Branch role required" });
+  }
+
+  const date = formatDateLocal(new Date());
+  const onlineSales = Number(req.body?.onlineSales);
+  const cashSales = Number(req.body?.cashSales);
+  const cashPresent = Number(req.body?.cashPresent);
+  const onlinePresent = Number(req.body?.onlinePresent);
+  const values = { onlineSales, cashSales, cashPresent, onlinePresent };
+  const hasInvalidValue = Object.values(values).some((value) => !Number.isFinite(value) || value < 0);
+  if (hasInvalidValue) {
+    return res.status(400).json({ message: "All fields must be valid numbers greater than or equal to zero" });
+  }
+
+  const expenseLogs = await db
+    .collection(COLLECTIONS.EXPENSE_TICKET_LOGS)
+    .find({ branchId: req.user.branchId, category: "Branch Expense", date, status: { $ne: "DELETED" } })
+    .toArray();
+  const expenseSummary = summarizeBranchExpenses(expenseLogs);
+  const expectedCash = cashSales - expenseSummary.cash;
+  const expectedOnline = onlineSales - expenseSummary.online;
+  const varianceCash = cashPresent - expectedCash;
+  const varianceOnline = onlinePresent - expectedOnline;
+  const nowIso = new Date().toISOString();
+
+  const doc = {
+    branchId: req.user.branchId,
+    date,
+    onlineSales,
+    cashSales,
+    cashPresent,
+    onlinePresent,
+    expenseSummary,
+    expectedCash,
+    expectedOnline,
+    varianceCash,
+    varianceOnline,
+    updatedAt: nowIso,
+    updatedBy: req.user.id
+  };
+
+  const existing = await db.collection(COLLECTIONS.CASH_TALLIES).findOne({ branchId: req.user.branchId, date });
+  if (!existing) {
+    doc.id = uuidv4();
+    doc.createdAt = nowIso;
+    doc.createdBy = req.user.id;
+    await db.collection(COLLECTIONS.CASH_TALLIES).insertOne(doc);
+  } else {
+    await db.collection(COLLECTIONS.CASH_TALLIES).updateOne(
+      { branchId: req.user.branchId, date },
+      { $set: doc }
+    );
+  }
+
+  const saved = await db.collection(COLLECTIONS.CASH_TALLIES).findOne({ branchId: req.user.branchId, date });
+  res.status(existing ? 200 : 201).json({ ok: true, tally: saved, expenseSummary });
+});
+
+app.get("/api/admin/cash-management/summary", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+
+  const date = String(req.query.date || formatDateLocal(new Date())).trim();
+  const branches = await db.collection(COLLECTIONS.BRANCHES).find({}).sort({ name: 1 }).toArray();
+  const allBranchIds = branches.map((branch) => branch.id);
+  const requestedBranchIds = normalizeBranchIds(req.query.branchIds);
+  const selectedBranchIds = requestedBranchIds.length ? requestedBranchIds : allBranchIds;
+  const selectedBranches = branches.filter((branch) => selectedBranchIds.includes(branch.id));
+  const tallies = selectedBranchIds.length
+    ? await db.collection(COLLECTIONS.CASH_TALLIES).find({ date, branchId: { $in: selectedBranchIds } }).toArray()
+    : [];
+  const expenseLogs = selectedBranchIds.length
+    ? await db
+        .collection(COLLECTIONS.EXPENSE_TICKET_LOGS)
+        .find({ date, branchId: { $in: selectedBranchIds }, status: { $ne: "DELETED" } })
+        .toArray()
+    : [];
+  const expenseSummaryMap = summarizeExpenseLogsByBranch(expenseLogs);
+  const reports = selectedBranchIds.length
+    ? await db.collection(COLLECTIONS.CASH_REPORTS).find({ date, branchId: { $in: selectedBranchIds } }).toArray()
+    : [];
+  const reportMap = new Map(reports.map((report) => [report.branchId, report]));
+  const rows = buildCashSummaryRows(selectedBranches, tallies, expenseSummaryMap).map((row) => {
+    const report = reportMap.get(row.branchId);
+    return {
+      ...row,
+      report: report || null
+    };
+  });
+  const totals = summarizeCashRows(rows);
+  const accounts = await getCashAccountsSummary();
+
+  res.json({
+    date,
+    branches,
+    selectedBranchIds,
+    rows,
+    totals,
+    accounts
+  });
+});
+
+app.post("/api/admin/cash-management/verify", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+
+  const date = String(req.body?.date || formatDateLocal(new Date())).trim();
+  const branchId = String(req.body?.branchId || "").trim();
+  const verifiedCashPresent = Number(req.body?.verifiedCashPresent);
+  const verifiedOnlinePresent = Number(req.body?.verifiedOnlinePresent);
+  const remarks = String(req.body?.remarks || "").trim();
+  const resolutionReason = String(req.body?.resolutionReason || "").trim();
+
+  if (!date) return res.status(400).json({ message: "Date is required" });
+  if (!branchId) return res.status(400).json({ message: "Branch is required" });
+  if (!Number.isFinite(verifiedCashPresent) || verifiedCashPresent < 0) {
+    return res.status(400).json({ message: "Present cash verified must be a valid number" });
+  }
+  if (!Number.isFinite(verifiedOnlinePresent) || verifiedOnlinePresent < 0) {
+    return res.status(400).json({ message: "Present online verified must be a valid number" });
+  }
+
+  const branch = await db.collection(COLLECTIONS.BRANCHES).findOne({ id: branchId });
+  if (!branch) return res.status(400).json({ message: "Selected branch is invalid" });
+
+  const tally = await db.collection(COLLECTIONS.CASH_TALLIES).findOne({ date, branchId });
+  if (!tally) {
+    return res.status(400).json({ message: "Selected branch has not submitted cash management for this date" });
+  }
+
+  const expenseLogs = await db
+    .collection(COLLECTIONS.EXPENSE_TICKET_LOGS)
+    .find({ date, branchId, status: { $ne: "DELETED" } })
+    .toArray();
+  const expenseSummaryMap = summarizeExpenseLogsByBranch(expenseLogs);
+  const row = buildCashSummaryRows([branch], [tally], expenseSummaryMap)[0];
+  const calculationDiscrepancyCash = Number(row.calculationDiscrepancyCash || 0);
+  const calculationDiscrepancyOnline = Number(row.calculationDiscrepancyOnline || 0);
+  const verificationDiscrepancyCash = Number(row.cashPresent || 0) - verifiedCashPresent;
+  const verificationDiscrepancyOnline = Number(row.onlinePresent || 0) - verifiedOnlinePresent;
+  const hasDiscrepancy =
+    calculationDiscrepancyCash !== 0 ||
+    calculationDiscrepancyOnline !== 0 ||
+    verificationDiscrepancyCash !== 0 ||
+    verificationDiscrepancyOnline !== 0;
+  if (hasDiscrepancy && !resolutionReason) {
+    return res.status(400).json({ message: "Resolve discrepancy reason is required before verification" });
+  }
+  const verifiedAt = new Date().toISOString();
+  const existingReport = await db.collection(COLLECTIONS.CASH_REPORTS).findOne({ branchId, date });
+  const accountsBefore = await getCashAccountsSummary();
+  const baseCashAccount = accountsBefore.cashAccount - Number(existingReport?.verifiedCashPresent || 0);
+  const baseOnlineAccount = accountsBefore.onlineAccount - Number(existingReport?.verifiedOnlinePresent || 0);
+  const report = {
+    id: existingReport?.id || uuidv4(),
+    branchId,
+    date,
+    branchName: branch.name,
+    row,
+    totals: {
+      onlineSales: Number(row.onlineSales || 0),
+      cashSales: Number(row.cashSales || 0),
+      onlineExpense: Number(row.onlineExpense || 0),
+      cashExpense: Number(row.cashExpense || 0),
+      onlinePresent: Number(row.onlinePresent || 0),
+      cashPresent: Number(row.cashPresent || 0)
+    },
+    verifiedCashPresent,
+    verifiedOnlinePresent,
+    calculationDiscrepancyCash,
+    calculationDiscrepancyOnline,
+    verificationDiscrepancyCash,
+    verificationDiscrepancyOnline,
+    remarks,
+    resolutionReason,
+    resolvedAt: hasDiscrepancy ? verifiedAt : "",
+    verifiedAt,
+    verifiedBy: req.user.id,
+    cumulativeCashAccount: baseCashAccount + verifiedCashPresent,
+    cumulativeOnlineAccount: baseOnlineAccount + verifiedOnlinePresent,
+    hasDiscrepancy
+  };
+
+  if (existingReport) {
+    await db.collection(COLLECTIONS.CASH_REPORTS).updateOne(
+      { branchId, date },
+      { $set: report }
+    );
+  } else {
+    await db.collection(COLLECTIONS.CASH_REPORTS).insertOne(report);
+  }
+
+  const saved = await db.collection(COLLECTIONS.CASH_REPORTS).findOne({ branchId, date });
+  const accounts = await getCashAccountsSummary();
+
+  res.status(existingReport ? 200 : 201).json({ ok: true, report: saved, accounts });
+});
+
+app.get("/api/admin/cash-reports", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+
+  const startDate = String(req.query.startDate || "").trim();
+  const endDate = String(req.query.endDate || "").trim();
+  const branchIds = normalizeBranchIds(req.query.branchIds);
+  const filter = {};
+  if (startDate || endDate) {
+    filter.date = {};
+    if (startDate) filter.date.$gte = startDate;
+    if (endDate) filter.date.$lte = endDate;
+  }
+  if (branchIds.length) {
+    filter.branchId = { $in: branchIds };
+  }
+
+  const reports = await db.collection(COLLECTIONS.CASH_REPORTS).find(filter).sort({ date: -1 }).toArray();
+  const rangeTotals = reports.reduce(
+    (acc, report) => {
+      acc.onlineSales += Number(report?.totals?.onlineSales || 0);
+      acc.cashSales += Number(report?.totals?.cashSales || 0);
+      acc.onlineExpense += Number(report?.totals?.onlineExpense || 0);
+      acc.cashExpense += Number(report?.totals?.cashExpense || 0);
+      acc.onlinePresent += Number(report?.totals?.onlinePresent || 0);
+      acc.cashPresent += Number(report?.totals?.cashPresent || 0);
+      acc.verifiedCashPresent += Number(report?.verifiedCashPresent || 0);
+      acc.verifiedOnlinePresent += Number(report?.verifiedOnlinePresent || 0);
+      acc.calculationDiscrepancyCash += Number(report?.calculationDiscrepancyCash || 0);
+      acc.calculationDiscrepancyOnline += Number(report?.calculationDiscrepancyOnline || 0);
+      acc.verificationDiscrepancyCash += Number(report?.verificationDiscrepancyCash || 0);
+      acc.verificationDiscrepancyOnline += Number(report?.verificationDiscrepancyOnline || 0);
+      return acc;
+    },
+    {
+      onlineSales: 0,
+      cashSales: 0,
+      onlineExpense: 0,
+      cashExpense: 0,
+      onlinePresent: 0,
+      cashPresent: 0,
+      verifiedCashPresent: 0,
+      verifiedOnlinePresent: 0,
+      calculationDiscrepancyCash: 0,
+      calculationDiscrepancyOnline: 0,
+      verificationDiscrepancyCash: 0,
+      verificationDiscrepancyOnline: 0
+    }
+  );
+  const accounts = await getCashAccountsSummary();
+
+  res.json({ reports, rangeTotals, accounts });
+});
+
+app.post("/api/admin/cash-reports/send-previous-day", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  const targetDate = getPreviousDateInIST(new Date());
+  const result = await sendCashDailyReportForDate(targetDate, { markAutoSent: false });
+  if (!result.ok) {
+    return res.status(400).json({ message: result.reason || "Could not send cash report" });
+  }
+  res.json({ ok: true, date: targetDate });
 });
 
 app.get("/api/requests/history", authMiddleware, async (req, res) => {
@@ -3050,6 +3717,7 @@ async function start() {
     await connectToDatabase();
     db = getDb();
     await ensureIndexes();
+    scheduleCashReportJob();
     app.listen(PORT, () => {
       console.log(`Backend listening on port ${PORT}`);
     });

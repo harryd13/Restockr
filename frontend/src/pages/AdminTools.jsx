@@ -4,12 +4,20 @@ import Modal from "../components/Modal";
 
 function AdminTools({ reportStartDate, onRefresh, allowWeeklyOverride, onWeeklyOverrideChange }) {
   const [date, setDate] = useState(reportStartDate || "");
+  const [initialCashAccount, setInitialCashAccount] = useState("");
+  const [initialOnlineAccount, setInitialOnlineAccount] = useState("");
+  const [initialBalanceSuccess, setInitialBalanceSuccess] = useState("");
+  const [initialBalanceError, setInitialBalanceError] = useState("");
+  const [isSavingInitialBalances, setIsSavingInitialBalances] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
   const [showFlushModal, setShowFlushModal] = useState(false);
   const [flushReason, setFlushReason] = useState("");
   const [flushError, setFlushError] = useState("");
   const [flushSuccess, setFlushSuccess] = useState("");
   const [isFlushing, setIsFlushing] = useState(false);
+  const [cashReportSuccess, setCashReportSuccess] = useState("");
+  const [cashReportError, setCashReportError] = useState("");
+  const [isSendingCashReport, setIsSendingCashReport] = useState(false);
   const bannerTimer = useRef(null);
 
   useEffect(() => {
@@ -17,6 +25,10 @@ function AdminTools({ reportStartDate, onRefresh, allowWeeklyOverride, onWeeklyO
       setDate(reportStartDate);
     }
   }, [reportStartDate]);
+
+  useEffect(() => {
+    loadInitialBalances();
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -60,6 +72,47 @@ function AdminTools({ reportStartDate, onRefresh, allowWeeklyOverride, onWeeklyO
       setFlushError("Could not flush inventory.");
     } finally {
       setIsFlushing(false);
+    }
+  };
+
+  const sendPreviousDayCashReport = async () => {
+    try {
+      setIsSendingCashReport(true);
+      setCashReportError("");
+      const res = await axios.post("/api/admin/cash-reports/send-previous-day");
+      setCashReportSuccess(`Cash report sent for ${res.data?.date || "previous day"}.`);
+    } catch (err) {
+      setCashReportError(err?.response?.data?.message || "Could not send previous day cash report.");
+    } finally {
+      setIsSendingCashReport(false);
+    }
+  };
+
+  const loadInitialBalances = async () => {
+    try {
+      const res = await axios.get("/api/admin/settings/initial-cash-balances");
+      setInitialCashAccount(String(res.data?.cashAccount ?? 0));
+      setInitialOnlineAccount(String(res.data?.onlineAccount ?? 0));
+    } catch (err) {
+      setInitialBalanceError("Could not load initial balances.");
+    }
+  };
+
+  const saveInitialBalances = async () => {
+    try {
+      setIsSavingInitialBalances(true);
+      setInitialBalanceError("");
+      const res = await axios.post("/api/admin/settings/initial-cash-balances", {
+        cashAccount: Number(initialCashAccount || 0),
+        onlineAccount: Number(initialOnlineAccount || 0)
+      });
+      setInitialCashAccount(String(res.data?.cashAccount ?? 0));
+      setInitialOnlineAccount(String(res.data?.onlineAccount ?? 0));
+      setInitialBalanceSuccess("Initial balances updated.");
+    } catch (err) {
+      setInitialBalanceError(err?.response?.data?.message || "Could not update initial balances.");
+    } finally {
+      setIsSavingInitialBalances(false);
     }
   };
 
@@ -117,6 +170,56 @@ function AdminTools({ reportStartDate, onRefresh, allowWeeklyOverride, onWeeklyO
         <div style={{ marginTop: "0.75rem" }}>
           <button type="button" className="btn btn-primary" onClick={openFlushModal}>
             Flush Inventory
+          </button>
+        </div>
+      </section>
+
+      <section className="section-card" style={{ maxWidth: 560, width: "100%" }}>
+        <h4 className="section-title">Cash Report</h4>
+        <p className="muted-text">Send the previous day&apos;s cash report to Slack immediately.</p>
+        {cashReportSuccess && (
+          <div className="banner banner--success" style={{ marginTop: "0.75rem" }}>
+            <strong>Success:</strong> {cashReportSuccess}
+          </div>
+        )}
+        {cashReportError && (
+          <div className="banner banner--warning" style={{ marginTop: "0.75rem" }}>
+            <strong>Warning:</strong> {cashReportError}
+          </div>
+        )}
+        <div style={{ marginTop: "0.75rem" }}>
+          <button type="button" className="btn btn-primary" onClick={sendPreviousDayCashReport} disabled={isSendingCashReport}>
+            {isSendingCashReport ? "Sending..." : "Send Previous Day Cash Report"}
+          </button>
+        </div>
+      </section>
+
+      <section className="section-card" style={{ maxWidth: 560, width: "100%" }}>
+        <h4 className="section-title">Initial Cash Balances</h4>
+        <p className="muted-text">Set the starting shared cash and online balances used by cash reports.</p>
+        {initialBalanceSuccess && (
+          <div className="banner banner--success" style={{ marginTop: "0.75rem" }}>
+            <strong>Success:</strong> {initialBalanceSuccess}
+          </div>
+        )}
+        {initialBalanceError && (
+          <div className="banner banner--warning" style={{ marginTop: "0.75rem" }}>
+            <strong>Warning:</strong> {initialBalanceError}
+          </div>
+        )}
+        <div style={{ display: "grid", gap: "0.75rem", marginTop: "0.75rem" }}>
+          <label style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+            <span className="muted-text field-label">Cash account</span>
+            <input className="input" type="number" min={0} value={initialCashAccount} onChange={(e) => setInitialCashAccount(e.target.value)} />
+          </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
+            <span className="muted-text field-label">Online account</span>
+            <input className="input" type="number" min={0} value={initialOnlineAccount} onChange={(e) => setInitialOnlineAccount(e.target.value)} />
+          </label>
+        </div>
+        <div style={{ marginTop: "0.75rem" }}>
+          <button type="button" className="btn btn-primary" onClick={saveInitialBalances} disabled={isSavingInitialBalances}>
+            {isSavingInitialBalances ? "Saving..." : "Save Initial Balances"}
           </button>
         </div>
       </section>
