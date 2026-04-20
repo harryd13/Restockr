@@ -222,7 +222,7 @@ function AdminCashManagement({ onNavigate }) {
           </div>
         </div>
 
-        <div style={{ marginTop: "1rem", display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+        <div className="cash-management__controls" style={{ marginTop: "1rem" }}>
           <button type="button" className="btn btn-secondary cash-action-btn" onClick={() => loadSummary(date, selectedBranchIds, true)} disabled={isLoading}>
             {isLoading ? "Loading..." : "Refresh Summary"}
           </button>
@@ -253,7 +253,7 @@ function AdminCashManagement({ onNavigate }) {
           <span className="stats-pill">{date}</span>
         </div>
 
-        <div className="table-wrapper" style={{ marginTop: "1rem" }}>
+        <div className="table-wrapper cash-management__table--desktop" style={{ marginTop: "1rem" }}>
           <table>
             <thead>
               <tr>
