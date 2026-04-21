@@ -2,6 +2,24 @@ import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import Modal from "../components/Modal";
 
+function getAdminCashManagementBusinessDate(now = new Date()) {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    hour12: false
+  });
+  const parts = formatter.formatToParts(now);
+  const values = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  const businessDate = new Date(Date.UTC(Number(values.year), Number(values.month) - 1, Number(values.day)));
+  if (Number(values.hour) < 12) {
+    businessDate.setUTCDate(businessDate.getUTCDate() - 1);
+  }
+  return businessDate.toISOString().slice(0, 10);
+}
+
 function formatCurrency(value) {
   return `Rs ${Number(value || 0).toFixed(2)}`;
 }
@@ -23,7 +41,7 @@ function getDiscrepancyTone(value, resolved = false) {
 const EXPENSE_TICKET_PREFILL_KEY = "foffee_expense_ticket_prefill";
 
 function AdminCashManagement({ onNavigate }) {
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(() => getAdminCashManagementBusinessDate());
   const [branches, setBranches] = useState([]);
   const [selectedBranchIds, setSelectedBranchIds] = useState([]);
   const [rows, setRows] = useState([]);
