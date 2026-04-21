@@ -15,16 +15,18 @@ function AdminCashReports() {
     cashSales: 0,
     onlineExpense: 0,
     cashExpense: 0,
+    dueAmount: 0,
     onlinePresent: 0,
     cashPresent: 0,
     verifiedCashPresent: 0,
     verifiedOnlinePresent: 0,
     calculationDiscrepancyCash: 0,
     calculationDiscrepancyOnline: 0,
+    totalCalculationDiscrepancy: 0,
     verificationDiscrepancyCash: 0,
     verificationDiscrepancyOnline: 0
   });
-  const [accounts, setAccounts] = useState({ cashAccount: 0, onlineAccount: 0 });
+  const [accounts, setAccounts] = useState({ cashAccount: 0, onlineAccount: 0, dueAccount: 0 });
   const [errorBanner, setErrorBanner] = useState("");
   const [isLoading, setIsLoading] = useState(true);
 
@@ -49,7 +51,7 @@ function AdminCashReports() {
       const res = await axios.get("/api/admin/cash-reports", { params: { startDate: start, endDate: end } });
       setReports(res.data?.reports || []);
       setRangeTotals(res.data?.rangeTotals || {});
-      setAccounts(res.data?.accounts || { cashAccount: 0, onlineAccount: 0 });
+      setAccounts(res.data?.accounts || { cashAccount: 0, onlineAccount: 0, dueAccount: 0 });
     } catch (err) {
       setErrorBanner("Could not load cash reports.");
     } finally {
@@ -103,6 +105,10 @@ function AdminCashReports() {
           <div className="cash-metric">
             <span className="cash-metric__label">Online Account</span>
             <strong>{formatCurrency(accounts.onlineAccount)}</strong>
+          </div>
+          <div className="cash-metric">
+            <span className="cash-metric__label">Due Account</span>
+            <strong>{formatCurrency(accounts.dueAccount)}</strong>
           </div>
           <div className="cash-metric">
             <span className="cash-metric__label">Reports In Range</span>
@@ -173,10 +179,12 @@ function AdminCashReports() {
                 <th>Branch</th>
                 <th>Cash Present</th>
                 <th>Online Present</th>
+                <th>Dues</th>
                 <th>Cash Verified</th>
                 <th>Online Verified</th>
                 <th>Cash Calc Diff</th>
                 <th>Online Calc Diff</th>
+                <th>Total Calc Diff</th>
                 <th>Cash Verify Diff</th>
                 <th>Online Verify Diff</th>
                 <th>Resolution</th>
@@ -190,10 +198,12 @@ function AdminCashReports() {
                   <td>{report.branchName || report.branchId}</td>
                   <td>{formatCurrency(report.totals?.cashPresent)}</td>
                   <td>{formatCurrency(report.totals?.onlinePresent)}</td>
+                  <td>{formatCurrency(report.totals?.dueAmount)}</td>
                   <td>{formatCurrency(report.verifiedCashPresent)}</td>
                   <td>{formatCurrency(report.verifiedOnlinePresent)}</td>
                   <td>{formatCurrency(report.calculationDiscrepancyCash)}</td>
                   <td>{formatCurrency(report.calculationDiscrepancyOnline)}</td>
+                  <td>{formatCurrency(report.totalCalculationDiscrepancy)}</td>
                   <td>{formatCurrency(report.verificationDiscrepancyCash)}</td>
                   <td>{formatCurrency(report.verificationDiscrepancyOnline)}</td>
                   <td>{report.resolutionReason || (report.hasDiscrepancy ? "-" : "Auto-resolved")}</td>
@@ -202,7 +212,7 @@ function AdminCashReports() {
               ))}
               {!filteredReportRows.length && (
                 <tr>
-                  <td colSpan={12} className="muted-text">No cash reports found for the selected date range.</td>
+                  <td colSpan={14} className="muted-text">No cash reports found for the selected date range.</td>
                 </tr>
               )}
             </tbody>
@@ -231,7 +241,7 @@ function AdminCashReports() {
                   <tr key={`mobile-row-${report.id || `${report.branchId}-${report.date}`}`}>
                     <td>{report.date}</td>
                     <td>{report.branchName || report.branchId}</td>
-                    <td>{`C ${formatCurrency(report.totals?.cashPresent)} / O ${formatCurrency(report.totals?.onlinePresent)}`}</td>
+                    <td>{`C ${formatCurrency(report.totals?.cashPresent)} / O ${formatCurrency(report.totals?.onlinePresent)} / D ${formatCurrency(report.totals?.dueAmount)}`}</td>
                     <td>{`C ${formatCurrency(report.verifiedCashPresent)} / O ${formatCurrency(report.verifiedOnlinePresent)}`}</td>
                     <td>{status}</td>
                   </tr>

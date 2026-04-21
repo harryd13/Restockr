@@ -614,6 +614,12 @@ textarea:focus {
   gap: 0.3rem;
 }
 
+.cash-mobile-card__admin-expense {
+  grid-column: span 2;
+  background: #fef9c3 !important;
+  border-color: #facc15 !important;
+}
+
 .cash-mobile-card__label {
   color: #64748b;
   font-size: 0.78rem;
@@ -630,6 +636,10 @@ textarea:focus {
 
 .cash-management__table--desktop {
   display: block;
+}
+
+.cash-management__wide-card {
+  grid-column: span 2;
 }
 
 .cash-action-btn {
@@ -654,6 +664,12 @@ textarea:focus {
   border-color: #fca5a5;
   background: #fef2f2;
   color: #991b1b;
+}
+
+.cash-verify-row--admin-expense {
+  border-color: #facc15;
+  background: #fef9c3;
+  color: #713f12;
 }
 
 .cash-discrepancy-card {
@@ -682,6 +698,18 @@ textarea:focus {
   border-color: #93c5fd;
   background: #eff6ff;
   color: #1d4ed8;
+}
+
+.cash-admin-expense-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.35rem 0.6rem;
+  border-radius: 999px;
+  background: #fef9c3;
+  border: 1px solid #facc15;
+  color: #713f12;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .tickets-grid {

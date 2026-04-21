@@ -52,9 +52,12 @@ function AdminCashManagement({ onNavigate }) {
     cashExpense: 0,
     onlinePresent: 0,
     cashPresent: 0,
+    dueAmount: 0,
     submittedBranches: 0
   });
-  const [accounts, setAccounts] = useState({ cashAccount: 0, onlineAccount: 0 });
+  const [accounts, setAccounts] = useState({ cashAccount: 0, onlineAccount: 0, dueAccount: 0 });
+  const [combinedPurchaseSummary, setCombinedPurchaseSummary] = useState({ cashAmount: 0, onlineAmount: 0, total: 0, count: 0 });
+  const [pendingTicketSummary, setPendingTicketSummary] = useState({ cashAmount: 0, onlineAmount: 0, total: 0, count: 0 });
   const [errorBanner, setErrorBanner] = useState("");
   const [successBanner, setSuccessBanner] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -90,6 +93,7 @@ function AdminCashManagement({ onNavigate }) {
             cashExpense: acc.cashExpense + Number(row.cashExpense || 0),
             onlinePresent: acc.onlinePresent + Number(row.onlinePresent || 0),
             cashPresent: acc.cashPresent + Number(row.cashPresent || 0),
+            dueAmount: acc.dueAmount + Number(row.dueAmount || 0),
             submittedBranches: acc.submittedBranches + (row.submitted ? 1 : 0)
           }),
           {
@@ -99,11 +103,14 @@ function AdminCashManagement({ onNavigate }) {
             cashExpense: 0,
             onlinePresent: 0,
             cashPresent: 0,
+            dueAmount: 0,
             submittedBranches: 0
           }
         )
       );
-      setAccounts(res.data?.accounts || { cashAccount: 0, onlineAccount: 0 });
+      setAccounts(res.data?.accounts || { cashAccount: 0, onlineAccount: 0, dueAccount: 0 });
+      setCombinedPurchaseSummary(res.data?.combinedPurchaseSummary || { cashAmount: 0, onlineAmount: 0, total: 0, count: 0 });
+      setPendingTicketSummary(res.data?.pendingTicketSummary || { cashAmount: 0, onlineAmount: 0, total: 0, count: 0 });
     } catch (err) {
       setErrorBanner("Could not load admin cash management.");
     } finally {
@@ -153,7 +160,7 @@ function AdminCashManagement({ onNavigate }) {
         remarks,
         resolutionReason
       });
-      setAccounts(res.data?.accounts || { cashAccount: 0, onlineAccount: 0 });
+      setAccounts(res.data?.accounts || { cashAccount: 0, onlineAccount: 0, dueAccount: 0 });
       setSuccessBanner(`Cash report verified for ${activeRow.branchName}.`);
       setActiveRow(null);
       await loadSummary(date, selectedBranchIds, true);
@@ -186,11 +193,13 @@ function AdminCashManagement({ onNavigate }) {
 
   const calculationDiscrepancyCash = activeRow ? Number(activeRow.calculationDiscrepancyCash || 0) : 0;
   const calculationDiscrepancyOnline = activeRow ? Number(activeRow.calculationDiscrepancyOnline || 0) : 0;
+  const totalCalculationDiscrepancy = activeRow ? Number(activeRow.totalCalculationDiscrepancy || 0) : 0;
   const verificationDiscrepancyCash = activeRow ? Number(activeRow.cashPresent || 0) - (Number.parseFloat(verifiedCashPresent) || 0) : 0;
   const verificationDiscrepancyOnline = activeRow ? Number(activeRow.onlinePresent || 0) - (Number.parseFloat(verifiedOnlinePresent) || 0) : 0;
   const hasActiveDiscrepancy =
     calculationDiscrepancyCash !== 0 ||
     calculationDiscrepancyOnline !== 0 ||
+    totalCalculationDiscrepancy !== 0 ||
     verificationDiscrepancyCash !== 0 ||
     verificationDiscrepancyOnline !== 0;
   const discrepancyResolved = !hasActiveDiscrepancy || !!resolutionReason.trim();
@@ -235,6 +244,10 @@ function AdminCashManagement({ onNavigate }) {
             <strong>{selectedBranchIds.length}</strong>
           </div>
           <div className="cash-metric">
+            <span className="cash-metric__label">Due Account</span>
+            <strong>{formatCurrency(accounts.dueAccount)}</strong>
+          </div>
+          <div className="cash-metric">
             <span className="cash-metric__label">Submitted Tallies</span>
             <strong>{totals.submittedBranches}</strong>
           </div>
@@ -265,6 +278,54 @@ function AdminCashManagement({ onNavigate }) {
       <section className="section-card">
         <div className="cash-management__header">
           <div>
+            <h4 className="section-title">Combined Purchase</h4>
+            <p className="muted-text">Direct central purchase deduction for the selected date. No review needed.</p>
+          </div>
+          <span className="stats-pill">{combinedPurchaseSummary.count} logs</span>
+        </div>
+        <div className="cash-summary-grid" style={{ marginTop: "1rem" }}>
+          <div className="cash-summary-card">
+            <span className="cash-summary-card__label">Cash</span>
+            <strong>{formatCurrency(combinedPurchaseSummary.cashAmount)}</strong>
+          </div>
+          <div className="cash-summary-card">
+            <span className="cash-summary-card__label">Online</span>
+            <strong>{formatCurrency(combinedPurchaseSummary.onlineAmount)}</strong>
+          </div>
+          <div className="cash-summary-card cash-management__wide-card">
+            <span className="cash-summary-card__label">Total Combined Purchase</span>
+            <strong>{formatCurrency(combinedPurchaseSummary.total)}</strong>
+          </div>
+        </div>
+      </section>
+
+      <section className="section-card">
+        <div className="cash-management__header">
+          <div>
+            <h4 className="section-title">Pending Tickets</h4>
+            <p className="muted-text">Pending tickets settled on the selected date. Already deducted from shared balances.</p>
+          </div>
+          <span className="stats-pill">{pendingTicketSummary.count} logs</span>
+        </div>
+        <div className="cash-summary-grid" style={{ marginTop: "1rem" }}>
+          <div className="cash-summary-card">
+            <span className="cash-summary-card__label">Cash</span>
+            <strong>{formatCurrency(pendingTicketSummary.cashAmount)}</strong>
+          </div>
+          <div className="cash-summary-card">
+            <span className="cash-summary-card__label">Online</span>
+            <strong>{formatCurrency(pendingTicketSummary.onlineAmount)}</strong>
+          </div>
+          <div className="cash-summary-card cash-management__wide-card">
+            <span className="cash-summary-card__label">Total Pending Ticket Settlement</span>
+            <strong>{formatCurrency(pendingTicketSummary.total)}</strong>
+          </div>
+        </div>
+      </section>
+
+      <section className="section-card">
+        <div className="cash-management__header">
+          <div>
             <h4 className="section-title">Branch Summary</h4>
             <p className="muted-text">Every branch must be reviewed and verified separately for the day.</p>
           </div>
@@ -280,6 +341,8 @@ function AdminCashManagement({ onNavigate }) {
                 <th>Cash Sales</th>
                 <th>Online Expense</th>
                 <th>Cash Expense</th>
+                <th>Dues</th>
+                <th>Admin Expense</th>
                 <th>Online Present</th>
                 <th>Cash Present</th>
                 <th>Calc Status</th>
@@ -296,10 +359,16 @@ function AdminCashManagement({ onNavigate }) {
                   <td>{formatCurrency(row.cashSales)}</td>
                   <td>{formatCurrency(row.onlineExpense)}</td>
                   <td>{formatCurrency(row.cashExpense)}</td>
+                  <td>{formatCurrency(row.dueAmount)}</td>
+                  <td>
+                    <span className="cash-admin-expense-pill">
+                      {`C ${formatCurrency(row.adminCashExpense)} · O ${formatCurrency(row.adminOnlineExpense)}`}
+                    </span>
+                  </td>
                   <td>{formatCurrency(row.onlinePresent)}</td>
                   <td>{formatCurrency(row.cashPresent)}</td>
                   <td>
-                    {row.calculationDiscrepancyCash === 0 && row.calculationDiscrepancyOnline === 0 ? "OK" : "Mismatch"}
+                    {row.calculationDiscrepancyCash === 0 && row.calculationDiscrepancyOnline === 0 && Number(row.totalCalculationDiscrepancy || 0) === 0 ? "OK" : "Mismatch"}
                   </td>
                   <td>
                     {row.report
@@ -320,7 +389,7 @@ function AdminCashManagement({ onNavigate }) {
               ))}
               {!selectedRows.length && (
                 <tr>
-                  <td colSpan={11} className="muted-text">No branches selected.</td>
+                  <td colSpan={13} className="muted-text">No branches selected.</td>
                 </tr>
               )}
             </tbody>
@@ -339,11 +408,16 @@ function AdminCashManagement({ onNavigate }) {
                 <div><span className="cash-mobile-card__label">Cash Sales</span><strong>{formatCurrency(row.cashSales)}</strong></div>
                 <div><span className="cash-mobile-card__label">Online Expense</span><strong>{formatCurrency(row.onlineExpense)}</strong></div>
                 <div><span className="cash-mobile-card__label">Cash Expense</span><strong>{formatCurrency(row.cashExpense)}</strong></div>
+                <div><span className="cash-mobile-card__label">Dues</span><strong>{formatCurrency(row.dueAmount)}</strong></div>
                 <div><span className="cash-mobile-card__label">Online Present</span><strong>{formatCurrency(row.onlinePresent)}</strong></div>
                 <div><span className="cash-mobile-card__label">Cash Present</span><strong>{formatCurrency(row.cashPresent)}</strong></div>
+                <div className="cash-mobile-card__admin-expense">
+                  <span className="cash-mobile-card__label">Admin Expense</span>
+                  <strong>{`C ${formatCurrency(row.adminCashExpense)} · O ${formatCurrency(row.adminOnlineExpense)}`}</strong>
+                </div>
               </div>
               <div className="cash-mobile-card__status">
-                <span>Calc: {row.calculationDiscrepancyCash === 0 && row.calculationDiscrepancyOnline === 0 ? "OK" : "Mismatch"}</span>
+                <span>Calc: {row.calculationDiscrepancyCash === 0 && row.calculationDiscrepancyOnline === 0 && Number(row.totalCalculationDiscrepancy || 0) === 0 ? "OK" : "Mismatch"}</span>
                 <span>
                   Handover: {row.report
                     ? row.report.verificationDiscrepancyCash === 0 && row.report.verificationDiscrepancyOnline === 0
@@ -383,6 +457,10 @@ function AdminCashManagement({ onNavigate }) {
           <div className="cash-summary-card">
             <span className="cash-summary-card__label">Cash Present</span>
             <strong>{formatCurrency(totals.cashPresent)}</strong>
+          </div>
+          <div className="cash-summary-card">
+            <span className="cash-summary-card__label">Dues</span>
+            <strong>{formatCurrency(totals.dueAmount)}</strong>
           </div>
         </div>
       </section>
@@ -427,6 +505,14 @@ function AdminCashManagement({ onNavigate }) {
             <div className="cash-verify-row">
               <span>Cash Expense</span>
               <strong>{formatCurrency(activeRow.cashExpense)}</strong>
+            </div>
+            <div className="cash-verify-row">
+              <span>Dues</span>
+              <strong>{formatCurrency(activeRow.dueAmount)}</strong>
+            </div>
+            <div className="cash-verify-row cash-verify-row--admin-expense">
+              <span>Admin Expense</span>
+              <strong>{`Cash ${formatCurrency(activeRow.adminCashExpense)} · Online ${formatCurrency(activeRow.adminOnlineExpense)}`}</strong>
             </div>
             <div className="cash-verify-row">
               <span>Online Present</span>
@@ -488,6 +574,10 @@ function AdminCashManagement({ onNavigate }) {
                 Create Online Expense Ticket
               </button>
             )}
+            <div className={getDiscrepancyTone(totalCalculationDiscrepancy)}>
+              <span>Total Reconciliation Discrepancy</span>
+              <strong>{formatCurrency(totalCalculationDiscrepancy)}</strong>
+            </div>
             <div className={getDiscrepancyTone(verificationDiscrepancyCash, !!resolutionReason.trim())}>
               <span>Cash Verification Discrepancy</span>
               <strong>{formatCurrency(verificationDiscrepancyCash)}</strong>

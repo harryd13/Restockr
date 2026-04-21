@@ -4,6 +4,13 @@ import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import Modal from "../components/Modal";
 
+function clampCurrency(value, max) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return 0;
+  if (!Number.isFinite(max) || max < 0) return Number(numeric.toFixed(2));
+  return Number(Math.min(numeric, max).toFixed(2));
+}
+
 function CombinedPurchaseRun({ onNavigate }) {
   const [rows, setRows] = useState([]);
   const [items, setItems] = useState([]);
@@ -15,6 +22,8 @@ function CombinedPurchaseRun({ onNavigate }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showSubmitModal, setShowSubmitModal] = useState(false);
   const [errorBanner, setErrorBanner] = useState("");
+  const [cashAmount, setCashAmount] = useState(0);
+  const [onlineAmount, setOnlineAmount] = useState(0);
 
   useEffect(() => {
     loadQueue();
@@ -57,6 +66,15 @@ function CombinedPurchaseRun({ onNavigate }) {
     }, 0);
   }, [rows]);
 
+  useEffect(() => {
+    const nextCash = clampCurrency(cashAmount, total);
+    if (nextCash !== cashAmount) {
+      setCashAmount(nextCash);
+      return;
+    }
+    setOnlineAmount(Number((total - nextCash).toFixed(2)));
+  }, [total]);
+
   const addItem = () => {
     if (!newItemId) return;
     const selected = items.find((it) => it.id === newItemId);
@@ -80,8 +98,10 @@ function CombinedPurchaseRun({ onNavigate }) {
     if (!rows.length) return;
     try {
       setIsSubmitting(true);
-      await axios.post(`/api/combined-purchase-queue/submit`, { rows });
+      await axios.post(`/api/combined-purchase-queue/submit`, { rows, cashAmount, onlineAmount });
       setRows([]);
+      setCashAmount(0);
+      setOnlineAmount(0);
       setShowSubmitModal(false);
       await loadQueue();
       if (onNavigate) onNavigate("distribution");
@@ -93,6 +113,7 @@ function CombinedPurchaseRun({ onNavigate }) {
   };
 
   const canEdit = rows.length > 0;
+  const splitValid = Number((cashAmount + onlineAmount).toFixed(2)) === Number(total.toFixed(2));
 
   const formatStatusLabel = (status) => {
     if (status === "PAYMENT_PENDING") return "Pending";
@@ -124,6 +145,18 @@ function CombinedPurchaseRun({ onNavigate }) {
     doc.save(filename);
   };
 
+  const handleCashAmountChange = (value) => {
+    const nextCash = clampCurrency(value, total);
+    setCashAmount(nextCash);
+    setOnlineAmount(Number((total - nextCash).toFixed(2)));
+  };
+
+  const handleOnlineAmountChange = (value) => {
+    const nextOnline = clampCurrency(value, total);
+    setOnlineAmount(nextOnline);
+    setCashAmount(Number((total - nextOnline).toFixed(2)));
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
       {errorBanner && (
@@ -153,8 +186,16 @@ function CombinedPurchaseRun({ onNavigate }) {
           <span className="stats-pill">
             Total spend <strong style={{ color: "#0f172a" }}>Rs {total.toFixed(2)}</strong>
           </span>
+          <label style={{ display: "grid", gap: "0.35rem", minWidth: 160 }}>
+            <span className="muted-text field-label">Cash</span>
+            <input type="number" min={0} step="0.01" value={cashAmount} onChange={(e) => handleCashAmountChange(e.target.value)} />
+          </label>
+          <label style={{ display: "grid", gap: "0.35rem", minWidth: 160 }}>
+            <span className="muted-text field-label">Online</span>
+            <input type="number" min={0} step="0.01" value={onlineAmount} onChange={(e) => handleOnlineAmountChange(e.target.value)} />
+          </label>
           {canEdit && (
-            <button type="button" className="btn btn-primary" onClick={() => setShowSubmitModal(true)} disabled={!rows.length}>
+            <button type="button" className="btn btn-primary" onClick={() => setShowSubmitModal(true)} disabled={!rows.length || !splitValid}>
               Submit Purchase Request
             </button>
           )}
@@ -162,6 +203,11 @@ function CombinedPurchaseRun({ onNavigate }) {
             Download PDF
           </button>
         </div>
+        {!splitValid && (
+          <p className="muted-text" style={{ marginTop: "0.75rem", color: "#991b1b" }}>
+            Cash and online amounts must exactly match total spend.
+          </p>
+        )}
       </section>
 
       <section className="section-card">
@@ -284,7 +330,7 @@ function CombinedPurchaseRun({ onNavigate }) {
             <button type="button" className="btn btn-ghost" onClick={() => setShowSubmitModal(false)} disabled={isSubmitting}>
               Keep editing
             </button>
-            <button type="button" className="btn btn-primary" onClick={submitRun} disabled={isSubmitting}>
+            <button type="button" className="btn btn-primary" onClick={submitRun} disabled={isSubmitting || !splitValid}>
               {isSubmitting ? "Submitting..." : "Submit"}
             </button>
           </>
@@ -292,6 +338,9 @@ function CombinedPurchaseRun({ onNavigate }) {
       >
         <p className="muted-text" style={{ margin: 0 }}>
           Submitting locks the purchase request and prepares distribution.
+        </p>
+        <p className="muted-text" style={{ margin: "0.5rem 0 0" }}>
+          Payment split: Cash {`Rs ${cashAmount.toFixed(2)}`} · Online {`Rs ${onlineAmount.toFixed(2)}`}
         </p>
       </Modal>
     </div>

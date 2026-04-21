@@ -6,14 +6,16 @@ const INITIAL_FORM = {
   onlineSales: "",
   cashSales: "",
   cashPresent: "",
-  onlinePresent: ""
+  onlinePresent: "",
+  dueAmount: ""
 };
 
 const MONEY_FIELDS = [
   { key: "onlineSales", label: "Online Sales", hint: "Total online collections for today." },
   { key: "cashSales", label: "Cash Sales", hint: "Total cash collections for today." },
   { key: "cashPresent", label: "Cash Present", hint: "Cash physically available now." },
-  { key: "onlinePresent", label: "Online Present", hint: "Online balance available now." }
+  { key: "onlinePresent", label: "Online Present", hint: "Online balance available now." },
+  { key: "dueAmount", label: "Dues", hint: "Sales given on credit and not collected today." }
 ];
 
 function sanitizeNumericInput(value) {
@@ -60,7 +62,8 @@ function BranchCashManagement() {
           onlineSales: String(tally.onlineSales ?? ""),
           cashSales: String(tally.cashSales ?? ""),
           cashPresent: String(tally.cashPresent ?? ""),
-          onlinePresent: String(tally.onlinePresent ?? "")
+          onlinePresent: String(tally.onlinePresent ?? ""),
+          dueAmount: String(tally.dueAmount ?? "")
         });
       } else {
         setForm(INITIAL_FORM);
@@ -104,7 +107,7 @@ function BranchCashManagement() {
     setErrorBanner("");
     setSuccessBanner("");
     if (!validateForm()) {
-      setErrorBanner("Please enter numbers in all four fields before continuing.");
+      setErrorBanner("Please enter numbers in all fields before continuing.");
       return;
     }
     setShowVerifyModal(true);
@@ -158,7 +161,7 @@ function BranchCashManagement() {
             <span className="cash-metric__label">Submission Status</span>
             <strong>{savedTally ? "Saved for today" : "Pending for today"}</strong>
             <span className="muted-text">
-              {savedTally ? "You can update these values again if needed." : "Submit once all four fields are ready."}
+              {savedTally ? "You can update these values again if needed." : "Submit once all values are ready."}
             </span>
           </div>
         </div>
@@ -213,7 +216,7 @@ function BranchCashManagement() {
       >
         <div style={{ display: "grid", gap: "0.85rem" }}>
           <p className="muted-text" style={{ margin: 0 }}>
-            Please confirm the four values before saving. If anything looks wrong, click Edit.
+            Please confirm the entered values before saving. If anything looks wrong, click Edit.
           </p>
           <div className="cash-verify-grid">
             {MONEY_FIELDS.map((field) => (

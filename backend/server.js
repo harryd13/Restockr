@@ -45,6 +45,7 @@ const COLLECTIONS = {
   EXPENSE_TICKET_LOGS: "expenseTicketLogs",
   CASH_TALLIES: "cashTallies",
   CASH_REPORTS: "cashReports",
+  DUE_CLEARANCE_LOGS: "dueClearanceLogs",
   SETTINGS: "settings",
   MANUAL_ADJUSTMENTS: "manualInventoryAdjustments"
 };
@@ -135,8 +136,20 @@ async function getInitialCashBalancesSetting() {
   const settingsCol = db.collection(COLLECTIONS.SETTINGS);
   const doc = await settingsCol.findOne({ key: "initialCashBalances" });
   return {
+    mode: doc?.value?.mode === "rebase" ? "rebase" : "base_date",
     cashAccount: Number(doc?.value?.cashAccount || 0),
-    onlineAccount: Number(doc?.value?.onlineAccount || 0)
+    onlineAccount: Number(doc?.value?.onlineAccount || 0),
+    effectiveDate: String(doc?.value?.effectiveDate || "").trim(),
+    resetAt: String(doc?.value?.resetAt || "").trim()
+  };
+}
+
+async function getDueBalanceSetting() {
+  const settingsCol = db.collection(COLLECTIONS.SETTINGS);
+  const doc = await settingsCol.findOne({ key: "dueBalanceConfig" });
+  return {
+    dueAccount: Number(doc?.value?.dueAccount || 0),
+    resetAt: String(doc?.value?.resetAt || "").trim()
   };
 }
 
@@ -175,6 +188,31 @@ function summarizeExpenseLogsByBranch(logs = []) {
   return summaryMap;
 }
 
+function mergeExpenseSummaryMaps(...maps) {
+  const merged = new Map();
+  maps.forEach((map) => {
+    if (!(map instanceof Map)) return;
+    map.forEach((value, branchId) => {
+      const current = merged.get(branchId) || { total: 0, cash: 0, online: 0, other: 0 };
+      current.total += Number(value?.total || 0);
+      current.cash += Number(value?.cash || 0);
+      current.online += Number(value?.online || 0);
+      current.other += Number(value?.other || 0);
+      merged.set(branchId, current);
+    });
+  });
+  return merged;
+}
+
+function applyPaymentMethodAmount(acc, paymentMethod, amount, direction = 1) {
+  const normalizedAmount = Number(amount || 0);
+  if (normalizedAmount <= 0) return acc;
+  const normalizedPaymentMethod = String(paymentMethod || "").trim();
+  if (normalizedPaymentMethod === "Cash") acc.cashAccount += direction * normalizedAmount;
+  else if (normalizedPaymentMethod === "UPI") acc.onlineAccount += direction * normalizedAmount;
+  return acc;
+}
+
 function normalizeBranchIds(value) {
   if (Array.isArray(value)) {
     return Array.from(new Set(value.map((entry) => String(entry || "").trim()).filter(Boolean)));
@@ -189,17 +227,23 @@ function normalizeBranchIds(value) {
   );
 }
 
-function buildCashSummaryRows(branches = [], tallies = [], expenseSummaryMap = new Map()) {
+function buildCashSummaryRows(branches = [], tallies = [], expenseSummaryMap = new Map(), adminExpenseSummaryMap = new Map()) {
   const tallyMap = new Map(tallies.map((tally) => [tally.branchId, tally]));
   return branches.map((branch) => {
     const tally = tallyMap.get(branch.id);
     const expenseSummary = expenseSummaryMap.get(branch.id) || tally?.expenseSummary || { cash: 0, online: 0, total: 0, other: 0 };
+    const adminExpenseSummary = adminExpenseSummaryMap.get(branch.id) || { cash: 0, online: 0, total: 0, other: 0 };
     const onlineSales = Number(tally?.onlineSales || 0);
     const cashSales = Number(tally?.cashSales || 0);
     const onlineExpense = Number(expenseSummary.online || 0);
     const cashExpense = Number(expenseSummary.cash || 0);
+    const adminOnlineExpense = Number(adminExpenseSummary.online || 0);
+    const adminCashExpense = Number(adminExpenseSummary.cash || 0);
     const onlinePresent = Number(tally?.onlinePresent || 0);
     const cashPresent = Number(tally?.cashPresent || 0);
+    const dueAmount = Number(tally?.dueAmount || 0);
+    const totalCalculationDiscrepancy =
+      cashSales + onlineSales - (cashExpense + onlineExpense + cashPresent + onlinePresent + dueAmount);
     return {
       branchId: branch.id,
       branchName: branch.name,
@@ -208,10 +252,14 @@ function buildCashSummaryRows(branches = [], tallies = [], expenseSummaryMap = n
       cashSales,
       onlineExpense,
       cashExpense,
+      adminOnlineExpense,
+      adminCashExpense,
       onlinePresent,
       cashPresent,
+      dueAmount,
       calculationDiscrepancyCash: cashSales - (cashExpense + cashPresent),
-      calculationDiscrepancyOnline: onlineSales - (onlineExpense + onlinePresent)
+      calculationDiscrepancyOnline: onlineSales - (onlineExpense + onlinePresent),
+      totalCalculationDiscrepancy
     };
   });
 }
@@ -225,6 +273,7 @@ function summarizeCashRows(rows = []) {
       acc.cashExpense += Number(row.cashExpense || 0);
       acc.onlinePresent += Number(row.onlinePresent || 0);
       acc.cashPresent += Number(row.cashPresent || 0);
+      acc.dueAmount += Number(row.dueAmount || 0);
       acc.submittedBranches += row.submitted ? 1 : 0;
       return acc;
     },
@@ -235,23 +284,85 @@ function summarizeCashRows(rows = []) {
       cashExpense: 0,
       onlinePresent: 0,
       cashPresent: 0,
+      dueAmount: 0,
       submittedBranches: 0
     }
   );
 }
 
 async function getCashAccountsSummary({ excludeDate = "" } = {}) {
-  const initialBalances = await getInitialCashBalancesSetting();
-  const filter = excludeDate ? { date: { $ne: excludeDate } } : {};
-  const reports = await db.collection(COLLECTIONS.CASH_REPORTS).find(filter).toArray();
-  return reports.reduce(
-    (acc, report) => {
-      acc.cashAccount += Number(report?.verifiedCashPresent || 0);
-      acc.onlineAccount += Number(report?.verifiedOnlinePresent || 0);
-      return acc;
-    },
-    { cashAccount: initialBalances.cashAccount, onlineAccount: initialBalances.onlineAccount }
+  const balanceConfig = await getInitialCashBalancesSetting();
+  const dueConfig = await getDueBalanceSetting();
+  const reportFilter = excludeDate ? { date: { $ne: excludeDate } } : {};
+  const combinedPurchaseFilter = excludeDate ? { date: { $ne: excludeDate } } : {};
+  const dueClearanceFilter = excludeDate ? { date: { $ne: excludeDate } } : {};
+  const [reports, adminExpenseLogs, dailyExpenseLogs, combinedPurchaseLogs, dueClearanceLogs] = await Promise.all([
+    db.collection(COLLECTIONS.CASH_REPORTS).find(reportFilter).toArray(),
+    db.collection(COLLECTIONS.EXPENSE_TICKET_LOGS).find({ status: { $ne: "DELETED" }, category: { $ne: "Branch Expense" } }).toArray(),
+    db.collection(COLLECTIONS.EXPENSE_LOGS).find({}).toArray(),
+    db.collection(COLLECTIONS.COMBINED_PURCHASE_LOGS).find(combinedPurchaseFilter).toArray(),
+    db.collection(COLLECTIONS.DUE_CLEARANCE_LOGS).find(dueClearanceFilter).toArray()
+  ]);
+
+  const filteredReports = reports.filter((report) => {
+    if (balanceConfig.mode === "rebase") {
+      return !balanceConfig.resetAt || String(report?.verifiedAt || "") >= balanceConfig.resetAt;
+    }
+    return !balanceConfig.effectiveDate || String(report?.date || "") >= balanceConfig.effectiveDate;
+  });
+  const filteredAdminExpenseLogs = adminExpenseLogs.filter((log) => {
+    if (balanceConfig.mode === "rebase") {
+      return !balanceConfig.resetAt || String(log?.createdAt || "") >= balanceConfig.resetAt;
+    }
+    return !balanceConfig.effectiveDate || String(log?.date || "") >= balanceConfig.effectiveDate;
+  });
+  const filteredCombinedPurchaseLogs = combinedPurchaseLogs.filter((log) => {
+    if (balanceConfig.mode === "rebase") {
+      return !balanceConfig.resetAt || String(log?.createdAt || "") >= balanceConfig.resetAt;
+    }
+    return !balanceConfig.effectiveDate || String(log?.date || "") >= balanceConfig.effectiveDate;
+  });
+  const filteredDueClearanceLogs = dueClearanceLogs.filter((log) => !dueConfig.resetAt || String(log?.createdAt || "") >= dueConfig.resetAt);
+
+  const reviewedReportKeys = new Set(
+    filteredReports
+      .filter((report) => report?.branchId && report?.date)
+      .map((report) => `${report.branchId}:${report.date}`)
   );
+
+  const accounts = { cashAccount: balanceConfig.cashAccount, onlineAccount: balanceConfig.onlineAccount, dueAccount: dueConfig.dueAccount };
+
+  filteredReports.forEach((report) => {
+    applyPaymentMethodAmount(accounts, "Cash", report?.verifiedCashPresent, 1);
+    applyPaymentMethodAmount(accounts, "UPI", report?.verifiedOnlinePresent, 1);
+    if (!dueConfig.resetAt || String(report?.verifiedAt || "") >= dueConfig.resetAt) {
+      accounts.dueAccount += Number(report?.totals?.dueAmount || 0);
+    }
+  });
+
+  filteredAdminExpenseLogs.forEach((log) => {
+    applyPaymentMethodAmount(accounts, log?.paymentMethod, log?.amount, -1);
+  });
+
+  filteredCombinedPurchaseLogs.forEach((log) => {
+    applyPaymentMethodAmount(accounts, "Cash", log?.cashAmount, -1);
+    applyPaymentMethodAmount(accounts, "UPI", log?.onlineAmount, -1);
+  });
+
+  filteredDueClearanceLogs.forEach((log) => {
+    applyPaymentMethodAmount(accounts, log?.paymentMethod, log?.amount, 1);
+    accounts.dueAccount -= Number(log?.amount || 0);
+  });
+
+  dailyExpenseLogs.forEach((log) => {
+    const reportKey = `${String(log?.branchId || "").trim()}:${String(log?.requestDate || "").trim()}`;
+    if (!reviewedReportKeys.has(reportKey)) return;
+    if (balanceConfig.mode === "base_date" && balanceConfig.effectiveDate && String(log?.requestDate || "") < balanceConfig.effectiveDate) return;
+    applyPaymentMethodAmount(accounts, log?.paymentMethod, log?.total, -1);
+  });
+
+  accounts.dueAccount = Math.max(0, Number(accounts.dueAccount || 0));
+  return accounts;
 }
 
 function isValidReportStartDate(value) {
@@ -313,7 +424,7 @@ function getCashReportPageLink() {
   return "http://localhost:5173";
 }
 
-function buildSlackCashDailyMessage(date, reports = [], balances = { onlineAccount: 0, cashAccount: 0 }) {
+function buildSlackCashDailyMessage(date, reports = [], balances = { onlineAccount: 0, cashAccount: 0, dueAccount: 0 }) {
   const sortedReports = [...reports].sort((a, b) => String(a.branchName || a.branchId || "").localeCompare(String(b.branchName || b.branchId || "")));
   const gross = sortedReports.reduce(
     (acc, report) => {
@@ -323,10 +434,10 @@ function buildSlackCashDailyMessage(date, reports = [], balances = { onlineAccou
       acc.cashExpense += Number(report?.totals?.cashExpense || 0);
       acc.onlinePresent += Number(report?.totals?.onlinePresent || 0);
       acc.cashPresent += Number(report?.totals?.cashPresent || 0);
-      acc.onlineDiscrepancy +=
-        Number(report?.calculationDiscrepancyOnline || 0) + Number(report?.verificationDiscrepancyOnline || 0);
-      acc.cashDiscrepancy +=
-        Number(report?.calculationDiscrepancyCash || 0) + Number(report?.verificationDiscrepancyCash || 0);
+      acc.dueAmount += Number(report?.totals?.dueAmount || 0);
+      acc.totalDiscrepancy += Number(report?.totalCalculationDiscrepancy || 0);
+      acc.onlineVerifyDiscrepancy += Number(report?.verificationDiscrepancyOnline || 0);
+      acc.cashVerifyDiscrepancy += Number(report?.verificationDiscrepancyCash || 0);
       return acc;
     },
     {
@@ -336,8 +447,10 @@ function buildSlackCashDailyMessage(date, reports = [], balances = { onlineAccou
       cashExpense: 0,
       onlinePresent: 0,
       cashPresent: 0,
-      onlineDiscrepancy: 0,
-      cashDiscrepancy: 0
+      dueAmount: 0,
+      totalDiscrepancy: 0,
+      onlineVerifyDiscrepancy: 0,
+      cashVerifyDiscrepancy: 0
     }
   );
 
@@ -345,10 +458,6 @@ function buildSlackCashDailyMessage(date, reports = [], balances = { onlineAccou
     `${label.padEnd(6)} O ${formatMoney(onlineValue).padEnd(10)} C ${formatMoney(cashValue)}`;
 
   const branchSections = sortedReports.map((report) => {
-    const onlineDiscrepancy =
-      Number(report?.calculationDiscrepancyOnline || 0) + Number(report?.verificationDiscrepancyOnline || 0);
-    const cashDiscrepancy =
-      Number(report?.calculationDiscrepancyCash || 0) + Number(report?.verificationDiscrepancyCash || 0);
     const verificationStatus = report?.verifiedAt
       ? report?.hasDiscrepancy
         ? report?.resolutionReason
@@ -362,7 +471,8 @@ function buildSlackCashDailyMessage(date, reports = [], balances = { onlineAccou
       formatLine("Sale", report?.totals?.onlineSales, report?.totals?.cashSales),
       formatLine("Exp", report?.totals?.onlineExpense, report?.totals?.cashExpense),
       formatLine("Bal", report?.totals?.onlinePresent, report?.totals?.cashPresent),
-      formatLine("Disc", onlineDiscrepancy, cashDiscrepancy),
+      `Due    ${formatMoney(report?.totals?.dueAmount).padEnd(10)} Total Disc ${formatMoney(report?.totalCalculationDiscrepancy)}`,
+      formatLine("VDisc", report?.verificationDiscrepancyOnline, report?.verificationDiscrepancyCash),
       "```",
       `_Status: ${verificationStatus}_`
     ].join("\n");
@@ -374,7 +484,8 @@ function buildSlackCashDailyMessage(date, reports = [], balances = { onlineAccou
     formatLine("Sale", gross.onlineSales, gross.cashSales),
     formatLine("Exp", gross.onlineExpense, gross.cashExpense),
     formatLine("Bal", gross.onlinePresent, gross.cashPresent),
-    formatLine("Disc", gross.onlineDiscrepancy, gross.cashDiscrepancy),
+    `Due    ${formatMoney(gross.dueAmount).padEnd(10)} Total Disc ${formatMoney(gross.totalDiscrepancy)}`,
+    formatLine("VDisc", gross.onlineVerifyDiscrepancy, gross.cashVerifyDiscrepancy),
     "```"
   ].join("\n");
 
@@ -383,12 +494,13 @@ function buildSlackCashDailyMessage(date, reports = [], balances = { onlineAccou
     "```",
     `Online Balance  ${formatMoney(balances.onlineAccount)}`,
     `Cash Balance    ${formatMoney(balances.cashAccount)}`,
+    `Due Balance     ${formatMoney(balances.dueAccount)}`,
     "```"
   ].join("\n");
 
   return [
     `*Daily Cash Report*  ${date}`,
-    "_Legend: O = Online, C = Cash, Bal = Reported Balance_",
+    "_Legend: O = Online, C = Cash, Bal = Reported Balance, Due = Credit Sales_",
     `Cash Reports: ${getCashReportPageLink()} (open the Cash Reports tab)`,
     ...branchSections,
     grossSection,
@@ -406,9 +518,10 @@ async function buildCashDailyReportsForDate(date) {
     .find({ date, branchId: { $in: branchIds }, status: { $ne: "DELETED" } })
     .toArray();
   const reports = await db.collection(COLLECTIONS.CASH_REPORTS).find({ date, branchId: { $in: branchIds } }).toArray();
-  const expenseSummaryMap = summarizeExpenseLogsByBranch(expenseLogs);
+  const expenseSummaryMap = summarizeExpenseLogsByBranch(expenseLogs.filter((log) => String(log?.category || "").trim() === "Branch Expense"));
+  const adminExpenseSummaryMap = summarizeExpenseLogsByBranch(expenseLogs.filter((log) => String(log?.category || "").trim() !== "Branch Expense"));
   const reportMap = new Map(reports.map((report) => [report.branchId, report]));
-  return buildCashSummaryRows(branches, tallies, expenseSummaryMap).map((row) => {
+  return buildCashSummaryRows(branches, tallies, expenseSummaryMap, adminExpenseSummaryMap).map((row) => {
     const report = reportMap.get(row.branchId);
     return {
       branchId: row.branchId,
@@ -419,17 +532,19 @@ async function buildCashDailyReportsForDate(date) {
         onlineExpense: Number(row.onlineExpense || 0),
         cashExpense: Number(row.cashExpense || 0),
         onlinePresent: Number(row.onlinePresent || 0),
-        cashPresent: Number(row.cashPresent || 0)
+        cashPresent: Number(row.cashPresent || 0),
+        dueAmount: Number(row.dueAmount || 0)
       },
       calculationDiscrepancyCash: Number(row.calculationDiscrepancyCash || 0),
       calculationDiscrepancyOnline: Number(row.calculationDiscrepancyOnline || 0),
+      totalCalculationDiscrepancy: Number(report?.totalCalculationDiscrepancy ?? row.totalCalculationDiscrepancy ?? 0),
       verificationDiscrepancyCash: Number(report?.verificationDiscrepancyCash || 0),
       verificationDiscrepancyOnline: Number(report?.verificationDiscrepancyOnline || 0),
       verifiedAt: report?.verifiedAt || "",
       hasDiscrepancy:
         report?.verifiedAt
           ? !!report?.hasDiscrepancy
-          : Number(row.calculationDiscrepancyCash || 0) !== 0 || Number(row.calculationDiscrepancyOnline || 0) !== 0,
+          : Number(row.calculationDiscrepancyCash || 0) !== 0 || Number(row.calculationDiscrepancyOnline || 0) !== 0 || Number(row.totalCalculationDiscrepancy || 0) !== 0,
       resolutionReason: report?.resolutionReason || ""
     };
   });
@@ -723,6 +838,7 @@ async function ensureIndexes() {
   await db.collection(COLLECTIONS.EXPENSE_TICKET_LOGS).createIndex({ createdAt: -1 });
   await db.collection(COLLECTIONS.CASH_TALLIES).createIndex({ branchId: 1, date: 1 }, { unique: true });
   await db.collection(COLLECTIONS.CASH_TALLIES).createIndex({ updatedAt: -1 });
+  await db.collection(COLLECTIONS.DUE_CLEARANCE_LOGS).createIndex({ createdAt: -1 });
   try {
     await db.collection(COLLECTIONS.CASH_REPORTS).dropIndex("date_1");
   } catch (err) {
@@ -772,6 +888,12 @@ app.get("/api/admin/settings/initial-cash-balances", authMiddleware, async (req,
   res.json(balances);
 });
 
+app.get("/api/admin/settings/due-balance", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  const dueBalance = await getDueBalanceSetting();
+  res.json(dueBalance);
+});
+
 app.post("/api/settings/report-start-date", authMiddleware, async (req, res) => {
   const reportStartDate = String(req.body?.reportStartDate || "").trim();
   if (reportStartDate && !isValidReportStartDate(reportStartDate)) {
@@ -793,27 +915,56 @@ app.post("/api/settings/report-start-date", authMiddleware, async (req, res) => 
 
 app.post("/api/admin/settings/initial-cash-balances", authMiddleware, async (req, res) => {
   if (!ensureAdmin(req, res)) return;
+  const mode = String(req.body?.mode || "base_date").trim() === "rebase" ? "rebase" : "base_date";
   const cashAccount = Number(req.body?.cashAccount);
   const onlineAccount = Number(req.body?.onlineAccount);
+  const effectiveDate = String(req.body?.effectiveDate || "").trim();
   if (!Number.isFinite(cashAccount) || cashAccount < 0) {
     return res.status(400).json({ message: "Cash account must be a valid non-negative number" });
   }
   if (!Number.isFinite(onlineAccount) || onlineAccount < 0) {
     return res.status(400).json({ message: "Online account must be a valid non-negative number" });
   }
+  if (mode === "base_date" && !isValidReportStartDate(effectiveDate)) {
+    return res.status(400).json({ message: "Effective date must be YYYY-MM-DD for opening balance mode" });
+  }
+  const resetAt = mode === "rebase" ? new Date().toISOString() : "";
   await db.collection(COLLECTIONS.SETTINGS).updateOne(
     { key: "initialCashBalances" },
     {
       $set: {
         key: "initialCashBalances",
-        value: { cashAccount, onlineAccount },
+        value: { mode, cashAccount, onlineAccount, effectiveDate: mode === "base_date" ? effectiveDate : "", resetAt },
         updatedAt: new Date().toISOString(),
         updatedBy: req.user.id
       }
     },
     { upsert: true }
   );
-  res.json({ cashAccount, onlineAccount });
+  res.json({ mode, cashAccount, onlineAccount, effectiveDate: mode === "base_date" ? effectiveDate : "", resetAt });
+});
+
+app.post("/api/admin/settings/due-balance", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  const mode = String(req.body?.mode || "hard_zero").trim() === "set_value" ? "set_value" : "hard_zero";
+  const dueAccount = mode === "set_value" ? Number(req.body?.dueAccount) : 0;
+  if (!Number.isFinite(dueAccount) || dueAccount < 0) {
+    return res.status(400).json({ message: "Due balance must be a valid non-negative number" });
+  }
+  const resetAt = new Date().toISOString();
+  await db.collection(COLLECTIONS.SETTINGS).updateOne(
+    { key: "dueBalanceConfig" },
+    {
+      $set: {
+        key: "dueBalanceConfig",
+        value: { dueAccount, resetAt },
+        updatedAt: new Date().toISOString(),
+        updatedBy: req.user.id
+      }
+    },
+    { upsert: true }
+  );
+  res.json({ mode, dueAccount, resetAt });
 });
 
 app.get("/api/branches", authMiddleware, async (req, res) => {
@@ -1553,6 +1704,7 @@ app.post("/api/expense-tickets/:id/update", authMiddleware, async (req, res) => 
   } = req.body || {};
 
   const ticketsCol = db.collection(COLLECTIONS.EXPENSE_TICKETS);
+  const logsCol = db.collection(COLLECTIONS.EXPENSE_TICKET_LOGS);
   const ticket = await ticketsCol.findOne({ id });
   if (!ticket) return res.status(404).json({ message: "Expense ticket not found" });
   if (ticket.status === "DELETED") return res.status(400).json({ message: "Ticket already deleted" });
@@ -1607,6 +1759,29 @@ app.post("/api/expense-tickets/:id/update", authMiddleware, async (req, res) => 
   };
 
   await ticketsCol.updateOne({ id }, { $set: update });
+  if (ticket.status === "LOGGED") {
+    await logsCol.updateOne(
+      { ticketId: id, status: { $ne: "DELETED" } },
+      {
+        $set: {
+          branchId: update.branchId,
+          category: update.category,
+          assignee: update.assignee,
+          paymentMethod: update.paymentMethod,
+          amount: update.amount,
+          date: update.date,
+          attachmentName: update.attachmentName,
+          attachmentType: update.attachmentType,
+          attachmentData: update.attachmentData,
+          items: update.items,
+          employeeName: update.employeeName,
+          source: update.source,
+          note: update.note,
+          updatedAt: update.updatedAt
+        }
+      }
+    );
+  }
   res.json({ ok: true });
 });
 
@@ -1720,6 +1895,7 @@ app.post("/api/expense-tickets/:id/partial", authMiddleware, async (req, res) =>
     employeeName: update.employeeName,
     source: update.source,
     note: update.note,
+    sourceType: "PENDING_SETTLEMENT",
     status: nextStatus === "PENDING" ? "PARTIAL" : "LOGGED",
     createdAt: nowIso
   });
@@ -1994,7 +2170,8 @@ app.post("/api/cash-management/branch", authMiddleware, async (req, res) => {
   const cashSales = Number(req.body?.cashSales);
   const cashPresent = Number(req.body?.cashPresent);
   const onlinePresent = Number(req.body?.onlinePresent);
-  const values = { onlineSales, cashSales, cashPresent, onlinePresent };
+  const dueAmount = Number(req.body?.dueAmount);
+  const values = { onlineSales, cashSales, cashPresent, onlinePresent, dueAmount };
   const hasInvalidValue = Object.values(values).some((value) => !Number.isFinite(value) || value < 0);
   if (hasInvalidValue) {
     return res.status(400).json({ message: "All fields must be valid numbers greater than or equal to zero" });
@@ -2018,6 +2195,7 @@ app.post("/api/cash-management/branch", authMiddleware, async (req, res) => {
     cashSales,
     cashPresent,
     onlinePresent,
+    dueAmount,
     expenseSummary,
     expectedCash,
     expectedOnline,
@@ -2056,18 +2234,38 @@ app.get("/api/admin/cash-management/summary", authMiddleware, async (req, res) =
   const tallies = selectedBranchIds.length
     ? await db.collection(COLLECTIONS.CASH_TALLIES).find({ date, branchId: { $in: selectedBranchIds } }).toArray()
     : [];
-  const expenseLogs = selectedBranchIds.length
-    ? await db
-        .collection(COLLECTIONS.EXPENSE_TICKET_LOGS)
-        .find({ date, branchId: { $in: selectedBranchIds }, status: { $ne: "DELETED" } })
-        .toArray()
-    : [];
-  const expenseSummaryMap = summarizeExpenseLogsByBranch(expenseLogs);
+  const [expenseTicketLogs, dailyExpenseLogs] = selectedBranchIds.length
+    ? await Promise.all([
+        db
+          .collection(COLLECTIONS.EXPENSE_TICKET_LOGS)
+          .find({ date, branchId: { $in: selectedBranchIds }, status: { $ne: "DELETED" } })
+          .toArray(),
+        db
+          .collection(COLLECTIONS.EXPENSE_LOGS)
+          .find({ requestDate: date, branchId: { $in: selectedBranchIds } })
+          .toArray()
+      ])
+    : [[], []];
+  const pendingTicketLogs = expenseTicketLogs.filter((log) => String(log?.sourceType || "").trim() === "PENDING_SETTLEMENT");
+  const expenseSummaryMap = mergeExpenseSummaryMaps(
+    summarizeExpenseLogsByBranch(expenseTicketLogs.filter((log) => String(log?.category || "").trim() === "Branch Expense")),
+    summarizeExpenseLogsByBranch(
+      dailyExpenseLogs.map((log) => ({
+        branchId: log.branchId,
+        paymentMethod: log.paymentMethod,
+        amount: log.total
+      }))
+    )
+  );
+  const adminExpenseSummaryMap = summarizeExpenseLogsByBranch(
+    expenseTicketLogs.filter((log) => String(log?.category || "").trim() !== "Branch Expense")
+  );
   const reports = selectedBranchIds.length
     ? await db.collection(COLLECTIONS.CASH_REPORTS).find({ date, branchId: { $in: selectedBranchIds } }).toArray()
     : [];
+  const combinedPurchaseLogs = await db.collection(COLLECTIONS.COMBINED_PURCHASE_LOGS).find({ date }).sort({ createdAt: -1 }).toArray();
   const reportMap = new Map(reports.map((report) => [report.branchId, report]));
-  const rows = buildCashSummaryRows(selectedBranches, tallies, expenseSummaryMap).map((row) => {
+  const rows = buildCashSummaryRows(selectedBranches, tallies, expenseSummaryMap, adminExpenseSummaryMap).map((row) => {
     const report = reportMap.get(row.branchId);
     return {
       ...row,
@@ -2076,6 +2274,28 @@ app.get("/api/admin/cash-management/summary", authMiddleware, async (req, res) =
   });
   const totals = summarizeCashRows(rows);
   const accounts = await getCashAccountsSummary();
+  const combinedPurchaseSummary = combinedPurchaseLogs.reduce(
+    (acc, log) => {
+      acc.cashAmount += Number(log?.cashAmount || 0);
+      acc.onlineAmount += Number(log?.onlineAmount || 0);
+      acc.total += Number(log?.total || 0);
+      acc.count += 1;
+      return acc;
+    },
+    { cashAmount: 0, onlineAmount: 0, total: 0, count: 0 }
+  );
+  const pendingTicketSummary = pendingTicketLogs.reduce(
+    (acc, log) => {
+      const amount = Number(log?.amount || 0);
+      const paymentMethod = String(log?.paymentMethod || "").trim();
+      if (paymentMethod === "Cash") acc.cashAmount += amount;
+      if (paymentMethod === "UPI") acc.onlineAmount += amount;
+      acc.total += amount;
+      acc.count += 1;
+      return acc;
+    },
+    { cashAmount: 0, onlineAmount: 0, total: 0, count: 0 }
+  );
 
   res.json({
     date,
@@ -2083,8 +2303,46 @@ app.get("/api/admin/cash-management/summary", authMiddleware, async (req, res) =
     selectedBranchIds,
     rows,
     totals,
-    accounts
+    accounts,
+    combinedPurchaseSummary,
+    pendingTicketSummary
   });
+});
+
+app.get("/api/admin/cash-account-summary", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  const accounts = await getCashAccountsSummary();
+  res.json(accounts);
+});
+
+app.post("/api/admin/due-clearances", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  const amount = Number(req.body?.amount);
+  const paymentMethod = String(req.body?.paymentMethod || "").trim();
+  const note = String(req.body?.note || "").trim();
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return res.status(400).json({ message: "Amount must be greater than zero" });
+  }
+  if (paymentMethod !== "Cash" && paymentMethod !== "UPI") {
+    return res.status(400).json({ message: "Mode must be Cash or UPI" });
+  }
+  const accounts = await getCashAccountsSummary();
+  if (amount > Number(accounts?.dueAccount || 0)) {
+    return res.status(400).json({ message: "Clear amount cannot exceed current due balance" });
+  }
+  const nowIso = new Date().toISOString();
+  const date = getCurrentDateInIST();
+  await db.collection(COLLECTIONS.DUE_CLEARANCE_LOGS).insertOne({
+    id: uuidv4(),
+    amount,
+    paymentMethod,
+    note,
+    date,
+    createdAt: nowIso,
+    createdBy: req.user.id
+  });
+  const updatedAccounts = await getCashAccountsSummary();
+  res.status(201).json({ ok: true, accounts: updatedAccounts });
 });
 
 app.post("/api/admin/cash-management/verify", authMiddleware, async (req, res) => {
@@ -2114,19 +2372,39 @@ app.post("/api/admin/cash-management/verify", authMiddleware, async (req, res) =
     return res.status(400).json({ message: "Selected branch has not submitted cash management for this date" });
   }
 
-  const expenseLogs = await db
-    .collection(COLLECTIONS.EXPENSE_TICKET_LOGS)
-    .find({ date, branchId, status: { $ne: "DELETED" } })
-    .toArray();
-  const expenseSummaryMap = summarizeExpenseLogsByBranch(expenseLogs);
-  const row = buildCashSummaryRows([branch], [tally], expenseSummaryMap)[0];
+  const [expenseTicketLogs, dailyExpenseLogs] = await Promise.all([
+    db
+      .collection(COLLECTIONS.EXPENSE_TICKET_LOGS)
+      .find({ date, branchId, status: { $ne: "DELETED" } })
+      .toArray(),
+    db
+      .collection(COLLECTIONS.EXPENSE_LOGS)
+      .find({ requestDate: date, branchId })
+      .toArray()
+  ]);
+  const expenseSummaryMap = mergeExpenseSummaryMaps(
+    summarizeExpenseLogsByBranch(expenseTicketLogs.filter((log) => String(log?.category || "").trim() === "Branch Expense")),
+    summarizeExpenseLogsByBranch(
+      dailyExpenseLogs.map((log) => ({
+        branchId: log.branchId,
+        paymentMethod: log.paymentMethod,
+        amount: log.total
+      }))
+    )
+  );
+  const adminExpenseSummaryMap = summarizeExpenseLogsByBranch(
+    expenseTicketLogs.filter((log) => String(log?.category || "").trim() !== "Branch Expense")
+  );
+  const row = buildCashSummaryRows([branch], [tally], expenseSummaryMap, adminExpenseSummaryMap)[0];
   const calculationDiscrepancyCash = Number(row.calculationDiscrepancyCash || 0);
   const calculationDiscrepancyOnline = Number(row.calculationDiscrepancyOnline || 0);
+  const totalCalculationDiscrepancy = Number(row.totalCalculationDiscrepancy || 0);
   const verificationDiscrepancyCash = Number(row.cashPresent || 0) - verifiedCashPresent;
   const verificationDiscrepancyOnline = Number(row.onlinePresent || 0) - verifiedOnlinePresent;
   const hasDiscrepancy =
     calculationDiscrepancyCash !== 0 ||
     calculationDiscrepancyOnline !== 0 ||
+    totalCalculationDiscrepancy !== 0 ||
     verificationDiscrepancyCash !== 0 ||
     verificationDiscrepancyOnline !== 0;
   if (hasDiscrepancy && !resolutionReason) {
@@ -2137,6 +2415,12 @@ app.post("/api/admin/cash-management/verify", authMiddleware, async (req, res) =
   const accountsBefore = await getCashAccountsSummary();
   const baseCashAccount = accountsBefore.cashAccount - Number(existingReport?.verifiedCashPresent || 0);
   const baseOnlineAccount = accountsBefore.onlineAccount - Number(existingReport?.verifiedOnlinePresent || 0);
+  const reviewedTicketCashExpense = dailyExpenseLogs
+    .filter((log) => String(log?.paymentMethod || "").trim() === "Cash")
+    .reduce((sum, log) => sum + Number(log?.total || 0), 0);
+  const reviewedTicketOnlineExpense = dailyExpenseLogs
+    .filter((log) => String(log?.paymentMethod || "").trim() === "UPI")
+    .reduce((sum, log) => sum + Number(log?.total || 0), 0);
   const report = {
     id: existingReport?.id || uuidv4(),
     branchId,
@@ -2149,12 +2433,14 @@ app.post("/api/admin/cash-management/verify", authMiddleware, async (req, res) =
       onlineExpense: Number(row.onlineExpense || 0),
       cashExpense: Number(row.cashExpense || 0),
       onlinePresent: Number(row.onlinePresent || 0),
-      cashPresent: Number(row.cashPresent || 0)
+      cashPresent: Number(row.cashPresent || 0),
+      dueAmount: Number(row.dueAmount || 0)
     },
     verifiedCashPresent,
     verifiedOnlinePresent,
     calculationDiscrepancyCash,
     calculationDiscrepancyOnline,
+    totalCalculationDiscrepancy,
     verificationDiscrepancyCash,
     verificationDiscrepancyOnline,
     remarks,
@@ -2162,8 +2448,8 @@ app.post("/api/admin/cash-management/verify", authMiddleware, async (req, res) =
     resolvedAt: hasDiscrepancy ? verifiedAt : "",
     verifiedAt,
     verifiedBy: req.user.id,
-    cumulativeCashAccount: baseCashAccount + verifiedCashPresent,
-    cumulativeOnlineAccount: baseOnlineAccount + verifiedOnlinePresent,
+    cumulativeCashAccount: baseCashAccount + verifiedCashPresent - (existingReport ? 0 : reviewedTicketCashExpense),
+    cumulativeOnlineAccount: baseOnlineAccount + verifiedOnlinePresent - (existingReport ? 0 : reviewedTicketOnlineExpense),
     hasDiscrepancy
   };
 
@@ -2207,10 +2493,12 @@ app.get("/api/admin/cash-reports", authMiddleware, async (req, res) => {
       acc.cashExpense += Number(report?.totals?.cashExpense || 0);
       acc.onlinePresent += Number(report?.totals?.onlinePresent || 0);
       acc.cashPresent += Number(report?.totals?.cashPresent || 0);
+      acc.dueAmount += Number(report?.totals?.dueAmount || 0);
       acc.verifiedCashPresent += Number(report?.verifiedCashPresent || 0);
       acc.verifiedOnlinePresent += Number(report?.verifiedOnlinePresent || 0);
       acc.calculationDiscrepancyCash += Number(report?.calculationDiscrepancyCash || 0);
       acc.calculationDiscrepancyOnline += Number(report?.calculationDiscrepancyOnline || 0);
+      acc.totalCalculationDiscrepancy += Number(report?.totalCalculationDiscrepancy || 0);
       acc.verificationDiscrepancyCash += Number(report?.verificationDiscrepancyCash || 0);
       acc.verificationDiscrepancyOnline += Number(report?.verificationDiscrepancyOnline || 0);
       return acc;
@@ -2222,10 +2510,12 @@ app.get("/api/admin/cash-reports", authMiddleware, async (req, res) => {
       cashExpense: 0,
       onlinePresent: 0,
       cashPresent: 0,
+      dueAmount: 0,
       verifiedCashPresent: 0,
       verifiedOnlinePresent: 0,
       calculationDiscrepancyCash: 0,
       calculationDiscrepancyOnline: 0,
+      totalCalculationDiscrepancy: 0,
       verificationDiscrepancyCash: 0,
       verificationDiscrepancyOnline: 0
     }
@@ -2535,7 +2825,7 @@ app.get("/api/combined-purchase-queue", authMiddleware, async (req, res) => {
 
 app.post("/api/combined-purchase-queue/submit", authMiddleware, async (req, res) => {
   if (!ensureAdmin(req, res)) return;
-  const { rows } = req.body;
+  const { rows, cashAmount, onlineAmount } = req.body;
   if (!Array.isArray(rows)) return res.status(400).json({ message: "rows array is required" });
 
   const runsCol = db.collection(COLLECTIONS.COMBINED_PURCHASE_RUNS);
@@ -2564,14 +2854,28 @@ app.post("/api/combined-purchase-queue/submit", authMiddleware, async (req, res)
     if (row.status !== "AVAILABLE") return sum;
     return sum + (row.approvedQty || 0) * (row.unitPrice || 0);
   }, 0);
+  const normalizedCashAmount = Number(cashAmount || 0);
+  const normalizedOnlineAmount = Number(onlineAmount || 0);
+  if (!Number.isFinite(normalizedCashAmount) || normalizedCashAmount < 0) {
+    return res.status(400).json({ message: "Cash amount must be a valid number" });
+  }
+  if (!Number.isFinite(normalizedOnlineAmount) || normalizedOnlineAmount < 0) {
+    return res.status(400).json({ message: "Online amount must be a valid number" });
+  }
+  if (Number((normalizedCashAmount + normalizedOnlineAmount).toFixed(2)) !== Number(logTotal.toFixed(2))) {
+    return res.status(400).json({ message: "Cash and online split must match total spend" });
+  }
 
   await logsCol.insertOne({
     id: uuidv4(),
     combinedRunIds: runIds,
     weekStartDate,
+    date: getCurrentDateInIST(),
     requestCount: draftRuns.length,
     createdAt: new Date().toISOString(),
     total: logTotal,
+    cashAmount: normalizedCashAmount,
+    onlineAmount: normalizedOnlineAmount,
     items: logItems
   });
 
@@ -2788,6 +3092,7 @@ app.post("/api/combined-purchase-run/:id/add-item", authMiddleware, async (req, 
 app.post("/api/combined-purchase-run/:id/submit", authMiddleware, async (req, res) => {
   if (!ensureAdmin(req, res)) return;
   const { id } = req.params;
+  const { cashAmount, onlineAmount } = req.body || {};
   const runsCol = db.collection(COLLECTIONS.COMBINED_PURCHASE_RUNS);
   const itemsCol = db.collection(COLLECTIONS.COMBINED_PURCHASE_ITEMS);
   const logsCol = db.collection(COLLECTIONS.COMBINED_PURCHASE_LOGS);
@@ -2811,14 +3116,28 @@ app.post("/api/combined-purchase-run/:id/submit", authMiddleware, async (req, re
     if (row.status !== "AVAILABLE") return sum;
     return sum + (row.approvedQty || 0) * (row.unitPrice || 0);
   }, 0);
+  const normalizedCashAmount = Number(cashAmount || 0);
+  const normalizedOnlineAmount = Number(onlineAmount || 0);
+  if (!Number.isFinite(normalizedCashAmount) || normalizedCashAmount < 0) {
+    return res.status(400).json({ message: "Cash amount must be a valid number" });
+  }
+  if (!Number.isFinite(normalizedOnlineAmount) || normalizedOnlineAmount < 0) {
+    return res.status(400).json({ message: "Online amount must be a valid number" });
+  }
+  if (Number((normalizedCashAmount + normalizedOnlineAmount).toFixed(2)) !== Number(logTotal.toFixed(2))) {
+    return res.status(400).json({ message: "Cash and online split must match total spend" });
+  }
   await logsCol.insertOne({
     id: uuidv4(),
     combinedRunId: run.id,
     requestId: run.requestId,
     branchId: run.branchId,
     weekStartDate: run.weekStartDate,
+    date: getCurrentDateInIST(),
     createdAt: new Date().toISOString(),
     total: logTotal,
+    cashAmount: normalizedCashAmount,
+    onlineAmount: normalizedOnlineAmount,
     items: logItems
   });
 
