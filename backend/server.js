@@ -227,6 +227,10 @@ function normalizeBranchIds(value) {
   );
 }
 
+function getExpenseLogBusinessDate(log = {}) {
+  return String(log?.completedDate || log?.requestDate || "").trim();
+}
+
 function buildCashSummaryRows(branches = [], tallies = [], expenseSummaryMap = new Map(), adminExpenseSummaryMap = new Map()) {
   const tallyMap = new Map(tallies.map((tally) => [tally.branchId, tally]));
   return branches.map((branch) => {
@@ -355,9 +359,9 @@ async function getCashAccountsSummary({ excludeDate = "" } = {}) {
   });
 
   dailyExpenseLogs.forEach((log) => {
-    const reportKey = `${String(log?.branchId || "").trim()}:${String(log?.requestDate || "").trim()}`;
+    const reportKey = `${String(log?.branchId || "").trim()}:${getExpenseLogBusinessDate(log)}`;
     if (!reviewedReportKeys.has(reportKey)) return;
-    if (balanceConfig.mode === "base_date" && balanceConfig.effectiveDate && String(log?.requestDate || "") < balanceConfig.effectiveDate) return;
+    if (balanceConfig.mode === "base_date" && balanceConfig.effectiveDate && getExpenseLogBusinessDate(log) < balanceConfig.effectiveDate) return;
     applyPaymentMethodAmount(accounts, log?.paymentMethod, log?.total, -1);
   });
 
@@ -1446,6 +1450,7 @@ app.post("/api/tickets/:id/done", authMiddleware, async (req, res) => {
     branchId: ticket.branchId,
     type: ticket.type || "DAILY",
     requestDate: ticket.requestDate,
+    completedDate: getCurrentDateInIST(),
     assignee: assignee || ticket.assignee || "",
     paymentMethod: paymentMethod || ticket.paymentMethod || "",
     createdAt: ticket.createdAt,
@@ -1525,6 +1530,7 @@ app.post("/api/tickets/:id/partial", authMiddleware, async (req, res) => {
     branchId: ticket.branchId,
     type: ticket.type || "DAILY",
     requestDate: ticket.requestDate,
+    completedDate: getCurrentDateInIST(),
     assignee: assignee || ticket.assignee || "",
     paymentMethod: paymentMethod || ticket.paymentMethod || "",
     createdAt: ticket.createdAt,
@@ -2242,15 +2248,16 @@ app.get("/api/admin/cash-management/summary", authMiddleware, async (req, res) =
           .toArray(),
         db
           .collection(COLLECTIONS.EXPENSE_LOGS)
-          .find({ requestDate: date, branchId: { $in: selectedBranchIds } })
+          .find({ branchId: { $in: selectedBranchIds } })
           .toArray()
       ])
     : [[], []];
+  const filteredDailyExpenseLogs = dailyExpenseLogs.filter((log) => getExpenseLogBusinessDate(log) === date);
   const pendingTicketLogs = expenseTicketLogs.filter((log) => String(log?.sourceType || "").trim() === "PENDING_SETTLEMENT");
   const expenseSummaryMap = mergeExpenseSummaryMaps(
     summarizeExpenseLogsByBranch(expenseTicketLogs.filter((log) => String(log?.category || "").trim() === "Branch Expense")),
     summarizeExpenseLogsByBranch(
-      dailyExpenseLogs.map((log) => ({
+      filteredDailyExpenseLogs.map((log) => ({
         branchId: log.branchId,
         paymentMethod: log.paymentMethod,
         amount: log.total
@@ -2379,13 +2386,14 @@ app.post("/api/admin/cash-management/verify", authMiddleware, async (req, res) =
       .toArray(),
     db
       .collection(COLLECTIONS.EXPENSE_LOGS)
-      .find({ requestDate: date, branchId })
+      .find({ branchId })
       .toArray()
   ]);
+  const filteredDailyExpenseLogs = dailyExpenseLogs.filter((log) => getExpenseLogBusinessDate(log) === date);
   const expenseSummaryMap = mergeExpenseSummaryMaps(
     summarizeExpenseLogsByBranch(expenseTicketLogs.filter((log) => String(log?.category || "").trim() === "Branch Expense")),
     summarizeExpenseLogsByBranch(
-      dailyExpenseLogs.map((log) => ({
+      filteredDailyExpenseLogs.map((log) => ({
         branchId: log.branchId,
         paymentMethod: log.paymentMethod,
         amount: log.total
@@ -2415,10 +2423,10 @@ app.post("/api/admin/cash-management/verify", authMiddleware, async (req, res) =
   const accountsBefore = await getCashAccountsSummary();
   const baseCashAccount = accountsBefore.cashAccount - Number(existingReport?.verifiedCashPresent || 0);
   const baseOnlineAccount = accountsBefore.onlineAccount - Number(existingReport?.verifiedOnlinePresent || 0);
-  const reviewedTicketCashExpense = dailyExpenseLogs
+  const reviewedTicketCashExpense = filteredDailyExpenseLogs
     .filter((log) => String(log?.paymentMethod || "").trim() === "Cash")
     .reduce((sum, log) => sum + Number(log?.total || 0), 0);
-  const reviewedTicketOnlineExpense = dailyExpenseLogs
+  const reviewedTicketOnlineExpense = filteredDailyExpenseLogs
     .filter((log) => String(log?.paymentMethod || "").trim() === "UPI")
     .reduce((sum, log) => sum + Number(log?.total || 0), 0);
   const report = {
