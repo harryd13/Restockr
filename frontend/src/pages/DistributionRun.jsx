@@ -97,11 +97,25 @@ function DistributionRun() {
     return Array.from(map.entries());
   }, [rows]);
 
+  const hasMissingMismatchReasons = rows.some(
+    (row) => {
+      const hasMismatch = Number(row.requestedQty || 0) !== Number(row.approvedQty || 0);
+      const reason = String(row.mismatchReason || "").trim();
+      return !row.mismatchReasonSubmitted || (hasMismatch ? !reason : reason !== "No Mismatch");
+    }
+  );
+
   const saveUpdatesForRuns = async (runIds, sourceRows = rows) => {
     const runGroups = sourceRows.reduce((acc, row) => {
       if (!runIds.includes(row.runId)) return acc;
       if (!acc[row.runId]) acc[row.runId] = [];
-      acc[row.runId].push({ id: row.id, approvedQty: Number(row.approvedQty || 0) });
+      const hasMismatch = Number(row.requestedQty || 0) !== Number(row.approvedQty || 0);
+      acc[row.runId].push({
+        id: row.id,
+        requestedQty: Number(row.requestedQty || 0),
+        approvedQty: Number(row.approvedQty || 0),
+        mismatchReason: hasMismatch ? String(row.mismatchReason || "") : "No Mismatch"
+      });
       return acc;
     }, {});
     const updatedRows = [];
@@ -115,6 +129,11 @@ function DistributionRun() {
     }
   };
 
+  const submitRowUpdate = async (row) => {
+    await saveUpdatesForRuns([row.runId], [row]);
+    await loadQueue(true);
+  };
+
   const saveBranchUpdates = async (branchId) => {
     const runIds = Array.from(new Set(rows.filter((r) => r.branchId === branchId).map((r) => r.runId)));
     if (!runIds.length) return;
@@ -124,7 +143,7 @@ function DistributionRun() {
   };
 
   const finalizeAll = async () => {
-    if (!finalizeRunId) return;
+    if (!finalizeRunId || hasMissingMismatchReasons) return;
     try {
       setIsFinalizing(true);
       const normalized = normalizeRows(rows, inventoryMap);
@@ -195,14 +214,41 @@ function DistributionRun() {
                           <td>{row.categoryName}</td>
                           <td>{row.requestedQty}</td>
                           <td>
-                            <input
-                              type="number"
-                              min={0}
-                              max={getMaxAllowed(row, rows)}
-                              value={Number(row.approvedQty || 0)}
-                              onChange={(e) => changeRow(row.id, Number(e.target.value))}
-                              style={{ width: "5rem" }}
-                            />
+                            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                              <span>{row.approvedQty}</span>
+                              {Number(row.requestedQty || 0) !== Number(row.approvedQty || 0) && !row.mismatchReasonSubmitted && (
+                                <>
+                                  <input
+                                    type="text"
+                                    title="Reason For Mismatch"
+                                    placeholder="Reason For Mismatch"
+                                    value={row.mismatchReason || ""}
+                                    onChange={(e) =>
+                                      setRows((prev) =>
+                                        prev.map((currentRow) =>
+                                          currentRow.id === row.id
+                                            ? { ...currentRow, mismatchReason: e.target.value, mismatchReasonSubmitted: false }
+                                            : currentRow
+                                        )
+                                      )
+                                    }
+                                    style={{ width: "12rem" }}
+                                  />
+                                </>
+                              )}
+                              {row.mismatchReasonSubmitted ? (
+                                <span title="Reason For Mismatch">{row.mismatchReason}</span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="btn btn-primary"
+                                  onClick={() => submitRowUpdate(row)}
+                                  disabled={!row.receivedSubmitted}
+                                >
+                                  Submit
+                                </button>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -218,7 +264,12 @@ function DistributionRun() {
       {runs.length > 0 && (
         <section className="section-card">
           <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
-            <button type="button" className="btn btn-primary" onClick={() => setFinalizeRunId("all")} disabled={!rows.length}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => setFinalizeRunId("all")}
+              disabled={!rows.length || hasMissingMismatchReasons}
+            >
               Finalize All
             </button>
           </div>
