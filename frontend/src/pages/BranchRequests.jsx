@@ -21,6 +21,8 @@ function BranchRequests({ allowWeeklyOverride = false }) {
   const [expandedHistoryId, setExpandedHistoryId] = useState("");
   const [historyItems, setHistoryItems] = useState({});
   const [historyStatus, setHistoryStatus] = useState({});
+  const [historyEditingAllowed, setHistoryEditingAllowed] = useState({});
+  const [submittedReceivedItems, setSubmittedReceivedItems] = useState({});
   const [showSubmitModal, setShowSubmitModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showWeeklyBanner, setShowWeeklyBanner] = useState(false);
@@ -127,6 +129,17 @@ function BranchRequests({ allowWeeklyOverride = false }) {
     const res = await axios.get(`/api/requests/history/${requestId}/items`);
     setHistoryItems((prev) => ({ ...prev, [requestId]: res.data.items || [] }));
     setHistoryStatus((prev) => ({ ...prev, [requestId]: res.data.status || "" }));
+    setHistoryEditingAllowed((prev) => ({
+      ...prev,
+      [requestId]: Boolean(res.data.receivedEditingAllowed)
+    }));
+    setSubmittedReceivedItems((prev) => ({
+      ...prev,
+      ...(res.data.items || []).reduce((submitted, item) => {
+        if (item.receivedSubmitted) submitted[`${requestId}:${item.itemId}`] = true;
+        return submitted;
+      }, {})
+    }));
   };
 
   useEffect(() => {
@@ -155,6 +168,26 @@ function BranchRequests({ allowWeeklyOverride = false }) {
     setShowWeeklyBanner(true);
     if (bannerTimer.current) clearTimeout(bannerTimer.current);
     bannerTimer.current = setTimeout(() => setShowWeeklyBanner(false), 5000);
+  };
+
+  const changeRow = (requestId, itemId, value, maxAllowed) => {
+    setHistoryItems((prev) => ({
+      ...prev,
+      [requestId]: (prev[requestId] || []).map((row) => {
+        if (row.itemId !== itemId) return row;
+        const nextValue = Math.max(0, Math.min(maxAllowed, value));
+        return { ...row, approvedQty: nextValue };
+      })
+    }));
+  };
+
+  const submitReceivedQty = async (requestId, itemId, value, maxAllowed) => {
+    const receivedQty = Math.max(0, Math.min(maxAllowed, Number(value) || 0));
+    await axios.post(`/api/requests/history/${requestId}/items/${itemId}/received`, {
+      approvedQty: receivedQty
+    });
+    setSubmittedReceivedItems((prev) => ({ ...prev, [`${requestId}:${itemId}`]: true }));
+    await loadHistoryItems(requestId);
   };
 
   return (
@@ -297,6 +330,7 @@ function BranchRequests({ allowWeeklyOverride = false }) {
                 const isOpen = expandedHistoryId === h.id;
                 const itemsForHistory = historyItems[h.id] || [];
                 const statusForHistory = historyStatus[h.id] || h.status;
+                const canEditReceived = historyEditingAllowed[h.id] && statusForHistory !== "DISTRIBUTED";
                 return (
                   <React.Fragment key={h.id}>
                     <tr>
@@ -332,19 +366,49 @@ function BranchRequests({ allowWeeklyOverride = false }) {
                                   <th>Item</th>
                                   <th>Category</th>
                                   <th>Requested</th>
-                                  <th>Approved</th>
+                                  <th>Received</th>
                                 </tr>
                               </thead>
                               <tbody>
                                 {itemsForHistory.map((item) => {
                                   const isUndistributed =
                                     statusForHistory === "DISTRIBUTED" && Number(item.approvedQty || 0) < Number(item.requestedQty || 0);
+                                  const itemKey = `${h.id}:${item.itemId}`;
+                                  const isReceivedSubmitted = submittedReceivedItems[itemKey];
                                   return (
                                     <tr key={`${h.id}-${item.itemId}`} className={isUndistributed ? "row-unavailable" : ""}>
                                       <td>{item.itemName}</td>
                                       <td>{item.categoryName}</td>
                                       <td>{item.requestedQty}</td>
-                                      <td>{item.approvedQty}</td>
+                                      <td>
+                                        {!canEditReceived || isReceivedSubmitted ? (
+                                          item.approvedQty
+                                        ) : (
+                                          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                                            <input
+                                              type="number"
+                                              min={0}
+                                              max={item.requestedQty}
+                                              value={Number(item.approvedQty || 0)}
+                                              onChange={(e) => changeRow(h.id, item.itemId, Number(e.target.value), item.requestedQty)}
+                                              style={{ width: "5rem" }}
+                                            />
+                                            <button
+                                              type="button"
+                                              className="btn btn-primary"
+                                              onClick={() => submitReceivedQty(h.id, item.itemId, item.approvedQty, item.requestedQty)}
+                                              disabled={isReceivedSubmitted}
+                                            >
+                                              {isReceivedSubmitted ? "Submitted" : "Submit"}
+                                            </button>
+                                          </div>
+                                        )}
+                                        {canEditReceived && isReceivedSubmitted && (
+                                          <button type="button" className="btn btn-primary" disabled>
+                                            Submitted
+                                          </button>
+                                        )}
+                                      </td>
                                     </tr>
                                   );
                                 })}

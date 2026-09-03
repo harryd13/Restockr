@@ -2586,12 +2586,14 @@ app.get("/api/requests/history/:id/items", authMiddleware, async (req, res) => {
   const requestsCol = db.collection(COLLECTIONS.WEEKLY_REQUESTS);
   const itemsCol = db.collection(COLLECTIONS.WEEKLY_REQUEST_ITEMS);
   const distItemsCol = db.collection(COLLECTIONS.DISTRIBUTION_ITEMS);
+  const combinedRunsCol = db.collection(COLLECTIONS.COMBINED_PURCHASE_RUNS);
 
   const reqObj = await requestsCol.findOne({ id, branchId: req.user.branchId });
   if (!reqObj) return res.status(404).json({ message: "Request not found" });
 
   const items = await itemsCol.find({ requestId: id }).toArray();
   const distItems = await distItemsCol.find({ requestId: id, branchId: req.user.branchId }).toArray();
+  const combinedRun = await combinedRunsCol.findOne({ requestId: id });
   const distMap = new Map(distItems.map((row) => [row.itemId, row]));
 
   const result = items.map((row) => {
@@ -2603,12 +2605,53 @@ app.get("/api/requests/history/:id/items", authMiddleware, async (req, res) => {
       categoryName: row.categoryName,
       requestedQty: row.requestedQty,
       approvedQty,
+      receivedSubmitted: Boolean(distRow?.receivedSubmitted),
       unitPrice: row.unitPrice || 0,
       status: distRow?.status || row.status || "AVAILABLE"
     };
   });
 
-  res.json({ status: reqObj.status, items: result });
+  res.json({
+    status: reqObj.status,
+    receivedEditingAllowed: combinedRun?.status === "SUBMITTED" && reqObj.status !== "DISTRIBUTED",
+    items: result
+  });
+});
+
+app.post("/api/requests/history/:id/items/:itemId/received", authMiddleware, async (req, res) => {
+  if (req.user.role !== "BRANCH") {
+    return res.status(403).json({ message: "Branch role required" });
+  }
+  const { id, itemId } = req.params;
+  const receivedQty = Number(req.body?.approvedQty);
+  if (!Number.isFinite(receivedQty) || receivedQty < 0) {
+    return res.status(400).json({ message: "Received quantity must be a valid non-negative number" });
+  }
+
+  const requestsCol = db.collection(COLLECTIONS.WEEKLY_REQUESTS);
+  const itemsCol = db.collection(COLLECTIONS.WEEKLY_REQUEST_ITEMS);
+  const distItemsCol = db.collection(COLLECTIONS.DISTRIBUTION_ITEMS);
+  const combinedRunsCol = db.collection(COLLECTIONS.COMBINED_PURCHASE_RUNS);
+  const reqObj = await requestsCol.findOne({ id, branchId: req.user.branchId });
+  if (!reqObj) return res.status(404).json({ message: "Request not found" });
+  const combinedRun = await combinedRunsCol.findOne({ requestId: id, status: "SUBMITTED" });
+  if (!combinedRun || reqObj.status === "DISTRIBUTED") {
+    return res.status(400).json({ message: "Received quantity is not editable yet" });
+  }
+
+  const requestItem = await itemsCol.findOne({ requestId: id, itemId });
+  if (!requestItem) return res.status(404).json({ message: "Request item not found" });
+  if (receivedQty > Number(requestItem.requestedQty || 0)) {
+    return res.status(400).json({ message: "Received quantity cannot exceed requested quantity" });
+  }
+
+  const result = await distItemsCol.updateOne(
+    { requestId: id, itemId, branchId: req.user.branchId },
+    { $set: { approvedQty: receivedQty, receivedSubmitted: true } }
+  );
+  if (!result.matchedCount) return res.status(404).json({ message: "Distribution item not found" });
+
+  res.json({ ok: true, approvedQty: receivedQty });
 });
 
 // --- Central Inventory / Combined Purchase / Distribution ---
@@ -3333,7 +3376,17 @@ app.post("/api/distribution-run/:id/items", authMiddleware, async (req, res) => 
 
   for (const item of bodyItems || []) {
     const update = {};
-    if (typeof item.approvedQty === "number") update.approvedQty = item.approvedQty;
+    if (typeof item.approvedQty === "number") {
+      update.approvedQty = item.approvedQty;
+      if (item.approvedQty === Number(item.requestedQty || 0)) {
+        update.mismatchReason = "No Mismatch";
+        update.mismatchReasonSubmitted = true;
+      }
+    }
+    if (typeof item.mismatchReason === "string" && !update.mismatchReason) {
+      update.mismatchReason = item.mismatchReason.trim();
+      update.mismatchReasonSubmitted = Boolean(update.mismatchReason);
+    }
     if (Object.keys(update).length) {
       await itemsCol.updateOne({ id: item.id, runId: id }, { $set: update });
     }
@@ -3358,6 +3411,13 @@ app.post("/api/distribution-run/:id/finalize", authMiddleware, async (req, res) 
 
   const distItems = await itemsCol.find({ runId: id }).toArray();
   if (!distItems.length) return res.status(400).json({ message: "No distribution items" });
+  if (distItems.some((row) => {
+    const hasMismatch = Number(row.requestedQty || 0) !== Number(row.approvedQty || 0);
+    const reason = String(row.mismatchReason || "").trim();
+    return !row.mismatchReasonSubmitted || (hasMismatch ? !reason : reason !== "No Mismatch");
+  })) {
+    return res.status(400).json({ message: "Submit a reason for every distribution item before finalizing" });
+  }
 
   const perItemTotals = new Map();
   for (const row of distItems) {
@@ -3466,6 +3526,13 @@ app.post("/api/distribution-run/finalize-multi", authMiddleware, async (req, res
 
   const distItems = await itemsCol.find({ runId: { $in: runIds } }).toArray();
   if (!distItems.length) return res.status(400).json({ message: "No distribution items" });
+  if (distItems.some((row) => {
+    const hasMismatch = Number(row.requestedQty || 0) !== Number(row.approvedQty || 0);
+    const reason = String(row.mismatchReason || "").trim();
+    return !row.mismatchReasonSubmitted || (hasMismatch ? !reason : reason !== "No Mismatch");
+  })) {
+    return res.status(400).json({ message: "Submit a reason for every distribution item before finalizing" });
+  }
 
   const perItemTotals = new Map();
   for (const row of distItems) {
