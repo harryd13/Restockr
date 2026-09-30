@@ -20,7 +20,11 @@ function BranchRequests({ allowWeeklyOverride = false }) {
   const [historyPage, setHistoryPage] = useState(1);
   const [expandedHistoryId, setExpandedHistoryId] = useState("");
   const [historyItems, setHistoryItems] = useState({});
-  const [historyStatus, setHistoryStatus] = useState({});
+  const [historyReceiptState, setHistoryReceiptState] = useState({});
+  const [receiptQuantities, setReceiptQuantities] = useState({});
+  const [receiptIdempotencyKeys, setReceiptIdempotencyKeys] = useState({});
+  const [verifyingReceiptId, setVerifyingReceiptId] = useState("");
+  const [receiptError, setReceiptError] = useState("");
   const [showSubmitModal, setShowSubmitModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showWeeklyBanner, setShowWeeklyBanner] = useState(false);
@@ -126,7 +130,72 @@ function BranchRequests({ allowWeeklyOverride = false }) {
     if (!requestId) return;
     const res = await axios.get(`/api/requests/history/${requestId}/items`);
     setHistoryItems((prev) => ({ ...prev, [requestId]: res.data.items || [] }));
-    setHistoryStatus((prev) => ({ ...prev, [requestId]: res.data.status || "" }));
+    setHistoryReceiptState((prev) => ({
+      ...prev,
+      [requestId]: {
+        distributionStatus: res.data.distributionStatus || "",
+        version: Number(res.data.distributionVersion || 0),
+        canVerifyReceipt: !!res.data.canVerifyReceipt,
+        receiptVerified: !!res.data.receiptVerified
+      }
+    }));
+    setReceiptQuantities((prev) => ({
+      ...prev,
+      [requestId]: Object.fromEntries((res.data.items || []).map((item) => [
+        item.itemId,
+        res.data.receiptVerified ? Number(item.deliveredQty || 0) : Number(item.approvedQty || 0)
+      ]))
+    }));
+  };
+
+  const changeReceivedQty = (requestId, itemId, value) => {
+    const numeric = Number(value);
+    const nextValue = Number.isFinite(numeric) ? Math.max(0, numeric) : 0;
+    setReceiptQuantities((prev) => ({
+      ...prev,
+      [requestId]: { ...(prev[requestId] || {}), [itemId]: nextValue }
+    }));
+  };
+
+  const verifyReceipt = async (requestId) => {
+    const itemsForHistory = historyItems[requestId] || [];
+    const quantitiesForRequest = receiptQuantities[requestId] || {};
+    const receiptState = historyReceiptState[requestId] || {};
+    if (!itemsForHistory.length) return;
+    try {
+      setVerifyingReceiptId(requestId);
+      setReceiptError("");
+      const idempotencyKey = receiptIdempotencyKeys[requestId]
+        || globalThis.crypto?.randomUUID?.()
+        || `${requestId}-${Date.now()}-${Math.random()}`;
+      if (!receiptIdempotencyKeys[requestId]) {
+        setReceiptIdempotencyKeys((prev) => ({ ...prev, [requestId]: idempotencyKey }));
+      }
+      const response = await axios.post(
+        `/api/requests/${requestId}/verify-receipt`,
+        {
+          idempotencyKey,
+          version: Number(receiptState.version || 0),
+          items: itemsForHistory.map((item) => ({
+            itemId: item.itemId,
+            receivedQty: Number(quantitiesForRequest[item.itemId] ?? item.requestedQty ?? 0)
+          }))
+        },
+        { skipGlobalError: true }
+      );
+      await loadHistory();
+      await loadHistoryItems(requestId);
+      if ((response.data?.conflicts || []).length) {
+        setReceiptError("Receipt verified, but delivered quantities exceed initial inventory. Admin review is required.");
+      }
+    } catch (err) {
+      if (err?.response?.status === 409) {
+        await loadHistoryItems(requestId).catch(() => {});
+      }
+      setReceiptError(err?.response?.data?.message || "Could not verify received items.");
+    } finally {
+      setVerifyingReceiptId("");
+    }
   };
 
   useEffect(() => {
@@ -281,7 +350,8 @@ function BranchRequests({ allowWeeklyOverride = false }) {
 
       <section className="section-card">
         <h4 className="section-title">History</h4>
-        <p className="muted-text">Track approvals and spend across previous weeks.</p>
+        <p className="muted-text">Track requested and received quantities across previous weeks.</p>
+        {receiptError && <div className="banner banner--warning" style={{ marginTop: "0.75rem" }}>{receiptError}</div>}
         <div className="table-wrapper" style={{ marginTop: "0.5rem" }}>
           <table>
             <thead>
@@ -289,14 +359,14 @@ function BranchRequests({ allowWeeklyOverride = false }) {
                 <th>Details</th>
                 <th>Week</th>
                 <th>Status</th>
-                <th>Total</th>
               </tr>
             </thead>
             <tbody>
               {pagedHistory.map((h) => {
                 const isOpen = expandedHistoryId === h.id;
                 const itemsForHistory = historyItems[h.id] || [];
-                const statusForHistory = historyStatus[h.id] || h.status;
+                const receiptState = historyReceiptState[h.id] || {};
+                const quantitiesForRequest = receiptQuantities[h.id] || {};
                 return (
                   <React.Fragment key={h.id}>
                     <tr>
@@ -320,11 +390,10 @@ function BranchRequests({ allowWeeklyOverride = false }) {
                       </td>
                       <td>{h.weekStartDate}</td>
                       <td>{h.status}</td>
-                      <td>₹{h.total}</td>
                     </tr>
                     {isOpen && (
                       <tr>
-                        <td colSpan={4}>
+                        <td colSpan={3}>
                           <div className="table-wrapper" style={{ marginTop: "0.5rem" }}>
                             <table>
                               <thead>
@@ -332,25 +401,62 @@ function BranchRequests({ allowWeeklyOverride = false }) {
                                   <th>Item</th>
                                   <th>Category</th>
                                   <th>Requested</th>
-                                  <th>Approved</th>
+                                  <th>Received</th>
                                 </tr>
                               </thead>
                               <tbody>
                                 {itemsForHistory.map((item) => {
-                                  const isUndistributed =
-                                    statusForHistory === "DISTRIBUTED" && Number(item.approvedQty || 0) < Number(item.requestedQty || 0);
+                                  const receivedQty = receiptState.receiptVerified
+                                    ? Number(item.deliveredQty || 0)
+                                    : Number(quantitiesForRequest[item.itemId] ?? item.approvedQty ?? 0);
+                                  const isUndistributed = receiptState.receiptVerified && receivedQty !== Number(item.requestedQty || 0);
                                   return (
                                     <tr key={`${h.id}-${item.itemId}`} className={isUndistributed ? "row-unavailable" : ""}>
                                       <td>{item.itemName}</td>
                                       <td>{item.categoryName}</td>
                                       <td>{item.requestedQty}</td>
-                                      <td>{item.approvedQty}</td>
+                                      <td>
+                                        {receiptState.canVerifyReceipt ? (
+                                          <div className="item-counter" style={{ justifyContent: "flex-start" }}>
+                                            <button type="button" className="btn btn-secondary" onClick={() => changeReceivedQty(h.id, item.itemId, receivedQty - 1)}>-</button>
+                                            <input
+                                              type="number"
+                                              min={0}
+                                              step={1}
+                                              value={receivedQty}
+                                              onChange={(event) => changeReceivedQty(h.id, item.itemId, event.target.value)}
+                                              style={{ width: "5rem", textAlign: "center" }}
+                                            />
+                                            <button type="button" className="btn btn-primary" onClick={() => changeReceivedQty(h.id, item.itemId, receivedQty + 1)}>+</button>
+                                          </div>
+                                        ) : receiptState.receiptVerified ? receivedQty : "Waiting for purchase"}
+                                      </td>
                                     </tr>
                                   );
                                 })}
                               </tbody>
                             </table>
                           </div>
+                          {receiptState.canVerifyReceipt && (
+                            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "0.75rem" }}>
+                              <button
+                                type="button"
+                                className="btn btn-primary"
+                                onClick={() => verifyReceipt(h.id)}
+                                disabled={verifyingReceiptId === h.id}
+                              >
+                                {verifyingReceiptId === h.id ? "Verifying..." : "Verify Received Items"}
+                              </button>
+                            </div>
+                          )}
+                          {receiptState.distributionStatus === "RECEIVED_PENDING_REVIEW" && (
+                            <p className="muted-text" style={{ marginTop: "0.75rem" }}>
+                              Receipt verified. Waiting for admin to close distribution.
+                            </p>
+                          )}
+                          {receiptState.distributionStatus === "FINALIZED" && (
+                            <p className="muted-text" style={{ marginTop: "0.75rem" }}>Distribution closed.</p>
+                          )}
                         </td>
                       </tr>
                     )}

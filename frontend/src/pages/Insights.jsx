@@ -296,7 +296,7 @@ function Insights({ reportStartDate = "", reportRefreshKey = 0 }) {
               {lastFourLogs.length === 0 && (
                 <tr>
                   <td colSpan={branchList.length + 2} className="muted-text">
-                    No finalized distributions yet.
+                    No verified distributions yet.
                   </td>
                 </tr>
               )}
@@ -631,7 +631,7 @@ function Insights({ reportStartDate = "", reportRefreshKey = 0 }) {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem" }}>
           <div>
             <h4 className="section-title">Distribution Logs</h4>
-            <p className="muted-text">Finalized distributions with branch-wise drill downs.</p>
+            <p className="muted-text">Branch-verified deliveries with admin-reviewed mismatch reasons.</p>
           </div>
           <button className="btn btn-secondary" type="button" onClick={loadPurchaseLogs}>
             Refresh
@@ -669,6 +669,7 @@ function Insights({ reportStartDate = "", reportRefreshKey = 0 }) {
                 >
                   <span>
                     Week {log.weekStartDate || new Date(log.createdAt).toISOString().slice(0, 10)} - {new Date(log.createdAt).toLocaleString()}
+                    {log.status === "PENDING_ADMIN_REVIEW" ? " (Pending admin review)" : ""}
                   </span>
                   <span>Rs {Number(log.total || 0).toFixed(2)} {isOpen ? "v" : "+"}</span>
                 </button>
@@ -687,8 +688,9 @@ function Insights({ reportStartDate = "", reportRefreshKey = 0 }) {
                                 <th>Item</th>
                                 <th>Category</th>
                                 <th>Requested</th>
-                                <th>Approved</th>
+                                <th>Delivered</th>
                                 <th>Total</th>
+                                <th>Mismatch Reason</th>
                               </tr>
                             </thead>
                             <tbody>
@@ -697,8 +699,9 @@ function Insights({ reportStartDate = "", reportRefreshKey = 0 }) {
                                   <td>{item.itemName}</td>
                                   <td>{item.categoryName}</td>
                                   <td>{item.requestedQty}</td>
-                                  <td>{item.approvedQty}</td>
+                                  <td>{item.deliveredQty ?? item.approvedQty}</td>
                                   <td>Rs {Number(item.totalPrice || 0).toFixed(2)}</td>
+                                  <td>{item.mismatchReason || "-"}</td>
                                 </tr>
                               ))}
                             </tbody>
