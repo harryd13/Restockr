@@ -208,7 +208,7 @@ function App() {
           setLoginError("Session expired. Please sign in again.");
           return Promise.reject(error);
         }
-        if (!url.includes("/api/login")) {
+        if (!url.includes("/api/login") && !error?.config?.skipGlobalError) {
           const message = error?.response?.data?.message || error?.message || "Something went wrong.";
           setAppError(message);
         }

@@ -30,3 +30,10 @@ export function getDb() {
   }
   return client.db();
 }
+
+export function getClient() {
+  if (!client) {
+    throw new Error("MongoDB client not initialized. Call connectToDatabase() first.");
+  }
+  return client;
+}

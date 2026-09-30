@@ -68,6 +68,18 @@ async function submitWeeklyRequest(page) {
   await page.getByRole("button", { name: "Confirm Submit" }).click();
 }
 
+async function verifyLatestReceipt(page, receivedQty) {
+  await openWeeklyRequest(page);
+  const historySection = page.locator("section", { hasText: "History" }).first();
+  await historySection.getByRole("button", { name: "View" }).first().click();
+  const itemRow = historySection.getByRole("row", { name: new RegExp(ITEM_NAME) }).last();
+  const receivedInput = itemRow.locator('input[type="number"]');
+  await expect(receivedInput).toHaveValue("1");
+  await receivedInput.fill(String(receivedQty));
+  await historySection.getByRole("button", { name: "Verify Received Items" }).click();
+  await expect(historySection.getByRole("cell", { name: "RECEIVED_PENDING_REVIEW" })).toBeVisible();
+}
+
 test.describe.serial("weekly request flow", () => {
   test("branch weekly request create, autosave, submit, and history", async ({ browser }) => {
     test.skip(!weeklyEnabled, "Weekly requests enabled only on Thursday or before 12pm Friday, or when E2E_WEEKLY_ALLOW_ANY_DAY=true.");
@@ -147,32 +159,56 @@ test.describe.serial("weekly request flow", () => {
     await context.close();
   });
 
-  test("admin finalizes distribution and branch history shows distributed", async ({ browser }) => {
+  test("branches verify receipts and admin closes distributions", async ({ browser }) => {
     test.skip(!weeklyEnabled, "Weekly requests enabled only on Thursday or before 12pm Friday, or when E2E_WEEKLY_ALLOW_ANY_DAY=true.");
+
+    const branchReceipts = [
+      [USERS.brahmpuri, 1],
+      [USERS.ridhi, 1],
+      [USERS.rajapark, 1]
+    ];
+    for (const [user, receivedQty] of branchReceipts) {
+      const branchContext = await browser.newContext();
+      const branchPage = await branchContext.newPage();
+      await login(branchPage, user);
+      await verifyLatestReceipt(branchPage, receivedQty);
+      await logout(branchPage);
+      await branchContext.close();
+    }
+
     const adminContext = await browser.newContext();
     const adminPage = await adminContext.newPage();
 
     await login(adminPage, USERS.admin);
     await adminPage.getByRole("button", { name: "Distribution" }).click();
     await expect(adminPage.getByRole("heading", { name: "Distribution Run" })).toBeVisible();
+    await expect(adminPage.getByText(/Combined branch receipts exceed initial inventory/)).toBeVisible();
 
-    const finalizeButton = adminPage.getByRole("button", { name: "Finalize All" });
-    await expect(finalizeButton).toBeVisible();
-    await finalizeButton.click();
-    await adminPage.getByRole("button", { name: "Finalize" }).click();
+    const reasonInput = adminPage.getByPlaceholder("Reason required");
+    await expect(reasonInput).toHaveCount(1);
+    await expect(reasonInput).toHaveValue("Delivered Qty > Initial");
+
+    while (await adminPage.getByRole("button", { name: "Close Distribution" }).count()) {
+      const openCount = await adminPage.getByRole("button", { name: "Close Distribution" }).count();
+      await adminPage.getByRole("button", { name: "Close Distribution" }).first().click();
+      const dialog = adminPage.getByRole("dialog");
+      await dialog.getByRole("button", { name: "Close Distribution" }).click();
+      await expect(dialog).toBeHidden();
+      await expect(adminPage.getByRole("button", { name: "Close Distribution" })).toHaveCount(openCount - 1);
+    }
     await expect(adminPage.getByText("No pending distributions.")).toBeVisible();
 
     await logout(adminPage);
     await adminContext.close();
 
-    const branchContext = await browser.newContext();
-    const branchPage = await branchContext.newPage();
+    const finalBranchContext = await browser.newContext();
+    const branchPage = await finalBranchContext.newPage();
     await login(branchPage, USERS.brahmpuri);
     await openWeeklyRequest(branchPage);
     const historySection = branchPage.locator("section", { hasText: "History" }).first();
     await expect(historySection.getByRole("cell", { name: "DISTRIBUTED" })).toBeVisible();
 
     await logout(branchPage);
-    await branchContext.close();
+    await finalBranchContext.close();
   });
 });
