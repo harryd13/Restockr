@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
-import Modal from "../components/Modal";
+import Modal from "../../shared/components/Modal";
 
 function getAdminCashManagementBusinessDate(now = new Date()) {
   const formatter = new Intl.DateTimeFormat("en-CA", {

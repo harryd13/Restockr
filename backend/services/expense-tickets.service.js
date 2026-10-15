@@ -1,7 +1,34 @@
 import { insertExpenseLog, updateExpenseLog } from "./ticket-workflow.service.js";
+import { upsertWeeklyCentralPurchaseLog } from "./weekly-summary.service.js";
 
 export function createExpenseTicketsService(context) {
   const { repository, uuidv4, ensureAdmin, formatDateLocal, sendSlackWebhook } = context;
+  async function refreshWeeklyPurchaseSummary(ticket, ticketUpdate) {
+    if (ticket.sourceType !== "WEEKLY_PURCHASE" || !ticket.distributionRunId) return;
+    const run = await repository.distributionRuns().findOne({ id: ticket.distributionRunId });
+    if (!run) return;
+    const [items, orderLog, paymentLogs] = await Promise.all([
+      repository.distributionItems().find({ runId: run.id }).toArray(),
+      repository.weeklyPurchaseOrderLogs().findOne({ id: run.orderLogId }),
+      repository.expenseTicketLogs().find({ distributionRunId: run.id, status: { $ne: "DELETED" } }).toArray()
+    ]);
+    const orderedMap = new Map((orderLog?.items || []).map((item) => [item.itemId, item]));
+    const summaryItems = items.map((item) => {
+      const actualPurchaseQty = Number(item.actualPurchaseQty ?? item.orderedQty ?? 0);
+      const finalUnitPrice = Number(item.estimatedUnitPrice ?? item.unitPrice ?? 0);
+      return { itemId: item.itemId, itemName: item.itemName, orderedQty: Number(item.orderedQty || 0), actualPurchaseQty, orderedEstimatedUnitPrice: Number(orderedMap.get(item.itemId)?.estimatedUnitPrice ?? finalUnitPrice), finalUnitPrice, purchaseAmount: Number((actualPurchaseQty * finalUnitPrice).toFixed(2)), paymentStatus: item.paymentStatus, paymentMethod: item.paymentMethod || "" };
+    });
+    const paidAmount = Number(paymentLogs.reduce((sum, log) => sum + Number(log.amount || 0), 0).toFixed(2));
+    await upsertWeeklyCentralPurchaseLog(repository.weeklyCentralPurchaseLogs(), run.weekStartDate, {
+      branchId: run.branchId, requestId: run.requestId, purchaseRunId: run.combinedRunId, distributionRunId: run.id, orderLogId: run.orderLogId,
+      status: ticketUpdate.status === "PENDING" ? "PAYMENT_PENDING" : run.status === "FINALIZED" ? "FINALIZED" : "PAYMENT_RECORDED",
+      distributionStatus: run.status, orderedAt: orderLog?.orderedAt || "", finalizedAt: run.finalizedAt || "",
+      orderedQty: summaryItems.reduce((sum, item) => sum + item.orderedQty, 0), purchasedQty: summaryItems.reduce((sum, item) => sum + item.actualPurchaseQty, 0), purchaseAmount: summaryItems.reduce((sum, item) => sum + item.purchaseAmount, 0),
+      paidAmount, pendingAmount: ticketUpdate.status === "PENDING" ? Number(ticketUpdate.amount || 0) : 0,
+      cashPaid: paymentLogs.filter((log) => log.paymentMethod === "Cash").reduce((sum, log) => sum + Number(log.amount || 0), 0),
+      upiPaid: paymentLogs.filter((log) => log.paymentMethod === "UPI").reduce((sum, log) => sum + Number(log.amount || 0), 0), items: summaryItems
+    });
+  }
   return {
     handle1: async (req, res) => {
     if (!ensureAdmin(req, res)) return;
@@ -328,9 +355,39 @@ export function createExpenseTicketsService(context) {
       source: update.source,
       note: update.note,
       sourceType: "PENDING_SETTLEMENT",
+      sourceId: ticket.sourceType === "WEEKLY_PURCHASE" ? `${ticket.id}:${nowIso}` : undefined,
+      weeklyRequestId: ticket.weeklyRequestId,
+      purchaseRunId: ticket.purchaseRunId,
+      distributionRunId: ticket.distributionRunId,
+      centralProcurementId: ticket.centralProcurementId,
+      paidAt: nowIso,
       status: nextStatus === "PENDING" ? "PARTIAL" : "LOGGED",
       createdAt: nowIso
     });
+
+    if (ticket.sourceType === "WEEKLY_PURCHASE" && nextStatus === "LOGGED") {
+      await repository.distributionItems().updateMany(
+        { pendingTicketId: ticket.id },
+        { $set: { paymentStatus: "PENDING_TICKET_CLOSED", paymentRecordedAt: nowIso, paymentMethod: normalizedPayment } }
+      );
+    }
+    if (ticket.sourceType === "CENTRAL_PROCUREMENT" && ticket.centralProcurementId) {
+      const procurement = await repository.centralProcurements().findOne({ id: ticket.centralProcurementId });
+      if (procurement) {
+        const paidAmount = Number((Number(procurement.paidAmount || 0) + normalizedPaid).toFixed(2));
+        await repository.centralProcurements().updateOne(
+          { id: procurement.id },
+          { $set: {
+            paidAmount,
+            paymentStatus: nextStatus === "LOGGED" ? "PAID" : "PARTIALLY_PAID",
+            paymentMethod: normalizedPayment,
+            status: nextStatus === "LOGGED" && procurement.receivedAt ? "COMPLETED" : procurement.status,
+            updatedAt: nowIso
+          } }
+        );
+      }
+    }
+    await refreshWeeklyPurchaseSummary(ticket, update);
   
     res.json({ ok: true, remainingAmount, status: nextStatus });
   },
@@ -571,6 +628,3 @@ export function createExpenseTicketsService(context) {
   }
   };
 }
-
-
-

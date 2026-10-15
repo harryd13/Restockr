@@ -1,5 +1,5 @@
 export function registerWeeklyRequestRoutesController(context) {
-  const { app, repository, ALLOW_WEEKLY_ANY_DAY, uuidv4, authMiddleware, isWeeklyWindow, startOfWeek, getWeeklyOverrideSetting, createCombinedPurchaseRunForRequest } = context;
+  const { app, repository, ALLOW_WEEKLY_ANY_DAY, uuidv4, authMiddleware, isWeeklyWindow, startOfWeek, getWeeklyOverrideSetting, createCombinedPurchaseRunForRequest, submitWeeklyRequestWithReservations } = context;
 
   // --- Branch Requests ---
   app.get("/api/requests/current", authMiddleware, async (req, res) => {
@@ -119,18 +119,15 @@ export function registerWeeklyRequestRoutesController(context) {
     if (!items.length) {
       return res.status(400).json({ message: "Cannot submit an empty request" });
     }
-    await requestsCol.updateOne(
-      { id },
-      { $set: { status: "SUBMITTED", updatedAt: new Date().toISOString() } }
-    );
-    const updated = await requestsCol.findOne({ id });
-    await createCombinedPurchaseRunForRequest(updated.id);
-    res.json({ request: updated });
+    try {
+      const updated = await submitWeeklyRequestWithReservations(id);
+      await createCombinedPurchaseRunForRequest(updated.id);
+      res.json({ request: updated });
+    } catch (error) {
+      res.status(error.status || 500).json({ message: error.message || "Could not reserve inventory for this request" });
+    }
   });
 }
-
-
-
 
 
 

@@ -74,12 +74,12 @@ registerMasterDataRoutes(app, { getDb: () => db, authMiddleware });
 registerReportRoutes(app, { getDb: () => db, authMiddleware });
 
 const database = { collection: (...args) => db.collection(...args) };
-const { getCentralInventoryMap, upsertCentralInventory, createCombinedPurchaseRunForRequest } =
-  createInventoryWorkflowService({ getDb: () => db, COLLECTIONS, uuidv4, startOfWeek });
+const { getCentralInventoryMap, upsertCentralInventory, reserveInventory, releaseInventory, createCombinedPurchaseRunForRequest, submitWeeklyRequestWithReservations } =
+  createInventoryWorkflowService({ getDb: () => db, getClient, COLLECTIONS, uuidv4, startOfWeek });
 
 registerSettingsRoutes({ app, db: database, COLLECTIONS, authMiddleware, ensureAdmin, isValidReportStartDate, getWeeklyOverrideSetting, getReportStartDateSetting, getInitialCashBalancesSetting, getDueBalanceSetting });
 
-registerWeeklyRequestRoutes({ app, db: database, COLLECTIONS, ALLOW_WEEKLY_ANY_DAY, uuidv4, authMiddleware, isWeeklyWindow, startOfWeek, getWeeklyOverrideSetting, createCombinedPurchaseRunForRequest });
+registerWeeklyRequestRoutes({ app, db: database, COLLECTIONS, ALLOW_WEEKLY_ANY_DAY, uuidv4, authMiddleware, isWeeklyWindow, startOfWeek, getWeeklyOverrideSetting, createCombinedPurchaseRunForRequest, submitWeeklyRequestWithReservations });
 
 registerDailyRequestRoutes({ app, db: database, COLLECTIONS, DAILY_MENTIONS, uuidv4, authMiddleware, formatDateLocal, formatMentions, sendDailyWebhook });
 
@@ -93,11 +93,11 @@ registerCashManagementRoutes({ app, db: database, COLLECTIONS, uuidv4, authMiddl
 
 registerRequestHistoryRoutes({ app, db: database, COLLECTIONS, uuidv4, authMiddleware, getCentralInventoryMap, upsertCentralInventory });
 
-registerInventoryRoutes({ app, db: database, COLLECTIONS, uuidv4, authMiddleware, ensureAdmin, parseStartDate });
+registerInventoryRoutes({ app, db: database, COLLECTIONS, uuidv4, authMiddleware, ensureAdmin, parseStartDate, getClient, getCurrentDateInIST });
 
-registerCombinedPurchaseRoutes({ app, db: database, COLLECTIONS, uuidv4, authMiddleware, ensureAdmin, formatDateLocal, getCurrentDateInIST, parseStartDate, startOfWeek, getCentralInventoryMap, upsertCentralInventory });
+registerCombinedPurchaseRoutes({ app, db: database, COLLECTIONS, uuidv4, authMiddleware, ensureAdmin, formatDateLocal, getCurrentDateInIST, parseStartDate, startOfWeek, getClient, getCentralInventoryMap, upsertCentralInventory, reserveInventory, releaseInventory });
 
-registerDistributionRoutes({ app, db: database, COLLECTIONS, uuidv4, authMiddleware, ensureAdmin, getClient, getCentralInventoryMap, upsertCentralInventory });
+registerDistributionRoutes({ app, db: database, COLLECTIONS, uuidv4, authMiddleware, ensureAdmin, getClient, getCurrentDateInIST, getCentralInventoryMap, upsertCentralInventory });
 
 registerPurchaseRoutes({ app, db: database, COLLECTIONS, uuidv4, authMiddleware, formatDateLocal, startOfWeek });
 

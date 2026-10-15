@@ -1,5 +1,59 @@
+import { upsertWeeklyCentralPurchaseLog } from "./weekly-summary.service.js";
+
 export function createCombinedPurchasesService(context) {
-  const { repository, uuidv4, ensureAdmin, formatDateLocal, getCurrentDateInIST, parseStartDate, startOfWeek, getCentralInventoryMap, upsertCentralInventory } = context;
+  const { repository, uuidv4, ensureAdmin, formatDateLocal, getCurrentDateInIST, parseStartDate, startOfWeek, getClient, getCentralInventoryMap, upsertCentralInventory, reserveInventory, releaseInventory } = context;
+
+  async function buildBranchPurchase(run, { session } = {}) {
+    const request = await repository.weeklyRequests().findOne({ id: run.requestId }, { session });
+    if (!request) return null;
+    const [requestItems, purchaseItems, branch] = await Promise.all([
+      repository.weeklyRequestItems().find({ requestId: request.id }, { session }).toArray(),
+      repository.combinedPurchaseItems().find({ runId: run.id }, { session }).toArray(),
+      repository.branches().findOne({ id: run.branchId || request.branchId }, { session })
+    ]);
+    const itemIds = requestItems.map((item) => item.itemId);
+    const inventoryRows = itemIds.length
+      ? await repository.centralInventory().find({ itemId: { $in: itemIds } }, { session }).toArray()
+      : [];
+    const inventoryByItemId = new Map(inventoryRows.map((item) => [item.itemId, item]));
+    const purchaseByItemId = new Map(purchaseItems.map((item) => [item.itemId, item]));
+    const items = requestItems.map((item) => {
+      const purchase = purchaseByItemId.get(item.itemId);
+      const requestedQty = Number(item.requestedQty || 0);
+      const centralReservedQty = Number(item.centralReservedQty || 0);
+      const purchaseRequiredQty = Math.max(0, requestedQty - centralReservedQty);
+      const inventory = inventoryByItemId.get(item.itemId);
+      const availableCentralQty = Math.max(0, Number(inventory?.onHand || 0) - Number(inventory?.reserved || 0));
+      return {
+        id: purchase?.id || item.id,
+        requestItemId: item.id,
+        itemId: item.itemId,
+        itemName: item.itemName,
+        categoryName: item.categoryName,
+        requestedQty,
+        centralReservedQty,
+        availableCentralQty,
+        maxCentralQty: Math.min(requestedQty, centralReservedQty + availableCentralQty),
+        purchaseRequiredQty,
+        orderQty: Number(purchase?.orderQty ?? purchase?.approvedQty ?? purchaseRequiredQty),
+        estimatedUnitPrice: Number(purchase?.estimatedUnitPrice ?? purchase?.unitPrice ?? item.unitPrice ?? 0),
+        includeInPdf: purchase?.includeInPdf !== false,
+        status: purchase?.status || "AVAILABLE"
+      };
+    });
+    return {
+      run: { ...run, version: Number(run.version || 0) },
+      branch: branch ? { id: branch.id, name: branch.name } : { id: run.branchId || request.branchId, name: run.branchId || request.branchId },
+      request: { id: request.id, status: request.status, weekStartDate: request.weekStartDate, submittedAt: request.submittedAt || request.createdAt },
+      items
+    };
+  }
+
+  function sendServiceError(res, error) {
+    if (error?.code === 11000) return res.status(409).json({ message: "This purchase was updated concurrently. Reload and try again." });
+    return res.status(error?.status || 500).json({ message: error?.message || "Unexpected error" });
+  }
+
   return {
     handle1: async (req, res) => {
     if (!ensureAdmin(req, res)) return;
@@ -196,8 +250,12 @@ export function createCombinedPurchasesService(context) {
       const distItems = [];
       for (const row of reqItems) {
         const purchaseItem = itemsById.get(row.itemId);
+        const centralReservedQty = Number(row.centralReservedQty || 0);
         const inventoryAvailable = Number(inventoryMap.get(row.itemId) || 0) > 0;
-        const receiptDefaultQty = inventoryAvailable ? Number(row.requestedQty || 0) : 0;
+        const purchaseAvailable = purchaseItem && purchaseItem.status !== "UNAVAILABLE";
+        const receiptDefaultQty = purchaseAvailable && inventoryAvailable
+          ? Number(row.requestedQty || 0)
+          : centralReservedQty;
         const isPending = purchaseItem?.status === "PAYMENT_PENDING";
         if (isPending && receiptDefaultQty > 0) {
           if (!pendingTicketsByReq.has(req.id)) pendingTicketsByReq.set(req.id, []);
@@ -217,6 +275,7 @@ export function createCombinedPurchasesService(context) {
           categoryName: row.categoryName,
           requestedQty: row.requestedQty,
           approvedQty: receiptDefaultQty,
+          centralReservedQty,
           receiptDefaultQty,
           deliveredQty: null,
           mismatchReason: receiptDefaultQty === 0 ? "Wasn't available for procurement" : "",
@@ -427,8 +486,12 @@ export function createCombinedPurchasesService(context) {
       if (submittedReq) {
         for (const row of reqItems) {
           const purchaseItem = purchaseItemMap.get(row.itemId);
+          const centralReservedQty = Number(row.centralReservedQty || 0);
           const inventoryAvailable = Number(inventoryMap.get(row.itemId) || 0) > 0;
-          const receiptDefaultQty = inventoryAvailable ? Number(row.requestedQty || 0) : 0;
+          const purchaseAvailable = purchaseItem && purchaseItem.status !== "UNAVAILABLE";
+          const receiptDefaultQty = purchaseAvailable && inventoryAvailable
+            ? Number(row.requestedQty || 0)
+            : centralReservedQty;
           const isPending = purchaseItem?.status === "PAYMENT_PENDING";
           if (isPending && receiptDefaultQty > 0) {
             pendingItems.push({
@@ -447,6 +510,7 @@ export function createCombinedPurchasesService(context) {
             categoryName: row.categoryName,
             requestedQty: row.requestedQty,
             approvedQty: receiptDefaultQty,
+            centralReservedQty,
             receiptDefaultQty,
             deliveredQty: null,
             mismatchReason: receiptDefaultQty === 0 ? "Wasn't available for procurement" : "",
@@ -489,6 +553,360 @@ export function createCombinedPurchasesService(context) {
   
     const updatedRun = await runsCol.findOne({ id });
     res.json({ run: updatedRun });
-  }
+  },
+
+    listBranchPurchases: async (req, res) => {
+      if (!ensureAdmin(req, res)) return;
+      try {
+        const weekStartDate = String(req.query.week || startOfWeek()).trim();
+        const statuses = String(req.query.status || "DRAFT").split(",").map((value) => value.trim()).filter(Boolean);
+        const runs = await repository.combinedPurchaseRuns()
+          .find({ weekStartDate, status: { $in: statuses } })
+          .sort({ createdAt: 1 })
+          .toArray();
+        const sections = (await Promise.all(runs.map((run) => buildBranchPurchase(run)))).filter(Boolean);
+        res.json({ weekStartDate, sections });
+      } catch (error) {
+        sendServiceError(res, error);
+      }
+    },
+
+    getBranchPurchase: async (req, res) => {
+      if (!ensureAdmin(req, res)) return;
+      try {
+        const run = await repository.combinedPurchaseRuns().findOne({ id: req.params.runId });
+        if (!run) return res.status(404).json({ message: "Branch purchase not found" });
+        const section = await buildBranchPurchase(run);
+        if (!section) return res.status(404).json({ message: "Weekly request not found" });
+        res.json(section);
+      } catch (error) {
+        sendServiceError(res, error);
+      }
+    },
+
+    getVendorPdfData: async (req, res) => {
+      if (!ensureAdmin(req, res)) return;
+      try {
+        const run = await repository.combinedPurchaseRuns().findOne({ id: req.params.runId });
+        if (!run) return res.status(404).json({ message: "Branch purchase not found" });
+        if (run.status !== "DRAFT") {
+          return res.status(400).json({ message: "Vendor PDF is only available while the branch purchase is in draft" });
+        }
+        const section = await buildBranchPurchase(run);
+        if (!section) return res.status(404).json({ message: "Weekly request not found" });
+        const items = section.items
+          .filter((item) => item.includeInPdf !== false && Number(item.orderQty || 0) > 0)
+          .map((item) => ({ itemName: item.itemName, orderQty: Number(item.orderQty || 0) }));
+        if (!items.length) {
+          return res.status(400).json({ message: "Select at least one item with an order quantity greater than zero" });
+        }
+        res.json({
+          purchaseRunId: run.id,
+          revision: Number(run.version || 0),
+          branch: section.branch,
+          weekStartDate: section.request.weekStartDate,
+          generatedAt: new Date().toISOString(),
+          items
+        });
+      } catch (error) {
+        sendServiceError(res, error);
+      }
+    },
+
+    updateBranchPurchase: async (req, res) => {
+      if (!ensureAdmin(req, res)) return;
+      const bodyItems = req.body?.items;
+      const expectedVersion = Number(req.body?.version);
+      if (!Array.isArray(bodyItems)) return res.status(400).json({ message: "items array is required" });
+      if (!Number.isInteger(expectedVersion) || expectedVersion < 0) return res.status(400).json({ message: "A valid version is required" });
+
+      const session = getClient().startSession();
+      let updatedRun;
+      try {
+        await session.withTransaction(async () => {
+          const run = await repository.combinedPurchaseRuns().findOne({ id: req.params.runId }, { session });
+          if (!run) throw Object.assign(new Error("Branch purchase not found"), { status: 404 });
+          if (run.status !== "DRAFT") throw Object.assign(new Error("Only draft branch purchases can be edited"), { status: 400 });
+          if (Number(run.version || 0) !== expectedVersion) {
+            throw Object.assign(new Error("This purchase changed elsewhere. Reload and try again."), { status: 409 });
+          }
+
+          const requestItems = await repository.weeklyRequestItems().find({ requestId: run.requestId }, { session }).toArray();
+          const requestByItemId = new Map(requestItems.map((item) => [item.itemId, item]));
+          const incomingByItemId = new Map();
+          for (const item of bodyItems) {
+            if (!item?.itemId || incomingByItemId.has(item.itemId)) {
+              throw Object.assign(new Error("Each request item must appear exactly once"), { status: 400 });
+            }
+            incomingByItemId.set(item.itemId, item);
+          }
+          if (incomingByItemId.size !== requestByItemId.size || requestItems.some((item) => !incomingByItemId.has(item.itemId))) {
+            throw Object.assign(new Error("Every request item must be included"), { status: 400 });
+          }
+
+          const nowIso = new Date().toISOString();
+          for (const requestItem of requestItems) {
+            const incoming = incomingByItemId.get(requestItem.itemId);
+            const requestedQty = Number(requestItem.requestedQty || 0);
+            const centralReservedQty = Number(incoming.centralReservedQty);
+            const orderQty = Number(incoming.orderQty);
+            const estimatedUnitPrice = Number(incoming.estimatedUnitPrice);
+            if (!Number.isFinite(centralReservedQty) || centralReservedQty < 0 || centralReservedQty > requestedQty) {
+              throw Object.assign(new Error(`${requestItem.itemName}: central quantity must be between 0 and ${requestedQty}`), { status: 400 });
+            }
+            if (!Number.isFinite(orderQty) || orderQty < 0) {
+              throw Object.assign(new Error(`${requestItem.itemName}: order quantity must be zero or greater`), { status: 400 });
+            }
+            if (!Number.isFinite(estimatedUnitPrice) || estimatedUnitPrice < 0) {
+              throw Object.assign(new Error(`${requestItem.itemName}: estimated MRP must be zero or greater`), { status: 400 });
+            }
+
+            const previousCentralQty = Number(requestItem.centralReservedQty || 0);
+            const reservationDelta = centralReservedQty - previousCentralQty;
+            if (reservationDelta > 0) {
+              const allocated = await reserveInventory(requestItem.itemId, reservationDelta, { session });
+              if (allocated !== reservationDelta) {
+                throw Object.assign(new Error(`${requestItem.itemName}: only ${allocated} additional units are available centrally`), { status: 409 });
+              }
+            } else if (reservationDelta < 0) {
+              const released = await releaseInventory(requestItem.itemId, Math.abs(reservationDelta), { session });
+              if (released !== Math.abs(reservationDelta)) {
+                throw Object.assign(new Error(`${requestItem.itemName}: saved reservation no longer matches central inventory`), { status: 409 });
+              }
+            }
+
+            const purchaseRequiredQty = Math.max(0, requestedQty - centralReservedQty);
+            await repository.weeklyRequestItems().updateOne(
+              { id: requestItem.id, requestId: run.requestId },
+              { $set: { centralReservedQty, purchaseRequiredQty } },
+              { session }
+            );
+            const existingPurchase = await repository.combinedPurchaseItems().findOne({ runId: run.id, itemId: requestItem.itemId }, { session });
+            const purchaseDoc = {
+              runId: run.id,
+              itemId: requestItem.itemId,
+              itemName: requestItem.itemName,
+              categoryName: requestItem.categoryName,
+              requestedQty,
+              centralReservedQty,
+              purchaseRequiredQty,
+              requestedTotal: purchaseRequiredQty,
+              orderQty,
+              approvedQty: orderQty,
+              estimatedUnitPrice,
+              unitPrice: estimatedUnitPrice,
+              includeInPdf: incoming.includeInPdf !== false,
+              status: existingPurchase?.status || "AVAILABLE",
+              manual: true,
+              updatedAt: nowIso
+            };
+            await repository.combinedPurchaseItems().updateOne(
+              existingPurchase ? { id: existingPurchase.id, runId: run.id } : { runId: run.id, itemId: requestItem.itemId },
+              { $set: purchaseDoc, $setOnInsert: { id: uuidv4(), createdAt: nowIso } },
+              { upsert: true, session }
+            );
+          }
+
+          const runResult = await repository.combinedPurchaseRuns().updateOne(
+            { id: run.id, status: "DRAFT", $or: [{ version: expectedVersion }, ...(expectedVersion === 0 ? [{ version: { $exists: false } }] : [])] },
+            { $set: { updatedAt: nowIso }, $inc: { version: 1 } },
+            { session }
+          );
+          if (runResult.modifiedCount !== 1) {
+            throw Object.assign(new Error("This purchase changed elsewhere. Reload and try again."), { status: 409 });
+          }
+          updatedRun = { ...run, version: expectedVersion + 1, updatedAt: nowIso };
+        });
+        res.json(await buildBranchPurchase(updatedRun));
+      } catch (error) {
+        sendServiceError(res, error);
+      } finally {
+        await session.endSession();
+      }
+    },
+
+    orderBranchPurchase: async (req, res) => {
+      if (!ensureAdmin(req, res)) return;
+      const idempotencyKey = String(req.body?.idempotencyKey || "").trim();
+      const expectedVersion = Number(req.body?.version);
+      if (!idempotencyKey) return res.status(400).json({ message: "idempotencyKey is required" });
+      if (!Number.isInteger(expectedVersion) || expectedVersion < 0) {
+        return res.status(400).json({ message: "A valid version is required" });
+      }
+
+      const session = getClient().startSession();
+      let response;
+      try {
+        await session.withTransaction(async () => {
+          const orderLogs = repository.weeklyPurchaseOrderLogs();
+          const existingByKey = await orderLogs.findOne({ idempotencyKey }, { session });
+          if (existingByKey) {
+            if (existingByKey.purchaseRunId !== req.params.runId) {
+              throw Object.assign(new Error("Idempotency key has already been used"), { status: 409 });
+            }
+            response = { ok: true, replayed: true, order: existingByKey };
+            return;
+          }
+
+          const run = await repository.combinedPurchaseRuns().findOne({ id: req.params.runId }, { session });
+          if (!run) throw Object.assign(new Error("Branch purchase not found"), { status: 404 });
+          const existingOrder = await orderLogs.findOne({ purchaseRunId: run.id }, { session });
+          if (existingOrder) {
+            response = { ok: true, replayed: true, order: existingOrder };
+            return;
+          }
+          if (run.status !== "DRAFT") {
+            throw Object.assign(new Error("Only a draft branch purchase can be ordered"), { status: 400 });
+          }
+          if (Number(run.version || 0) !== expectedVersion) {
+            throw Object.assign(new Error("This purchase changed elsewhere. Reload and try again."), { status: 409 });
+          }
+
+          const request = await repository.weeklyRequests().findOne({ id: run.requestId }, { session });
+          if (!request || request.status !== "SUBMITTED") {
+            throw Object.assign(new Error("Weekly request is not ready to be ordered"), { status: 400 });
+          }
+          const requestItems = await repository.weeklyRequestItems().find({ requestId: request.id }, { session }).toArray();
+          const purchaseItems = await repository.combinedPurchaseItems().find({ runId: run.id }, { session }).toArray();
+          const purchaseByItemId = new Map(purchaseItems.map((item) => [item.itemId, item]));
+          if (!requestItems.length) throw Object.assign(new Error("Branch purchase has no items"), { status: 400 });
+
+          const nowIso = new Date().toISOString();
+          const orderItems = requestItems.map((requestItem) => {
+            const purchaseItem = purchaseByItemId.get(requestItem.itemId) || {};
+            const requestedQty = Number(requestItem.requestedQty || 0);
+            const centralReservedQty = Number(requestItem.centralReservedQty || 0);
+            const purchaseRequiredQty = Math.max(0, requestedQty - centralReservedQty);
+            const orderQty = Number(purchaseItem.orderQty ?? purchaseItem.approvedQty ?? purchaseRequiredQty);
+            const estimatedUnitPrice = Number(purchaseItem.estimatedUnitPrice ?? purchaseItem.unitPrice ?? requestItem.unitPrice ?? 0);
+            if (!Number.isFinite(orderQty) || orderQty < 0 || !Number.isFinite(estimatedUnitPrice) || estimatedUnitPrice < 0) {
+              throw Object.assign(new Error(`${requestItem.itemName}: invalid order quantity or estimated MRP`), { status: 400 });
+            }
+            return {
+              itemId: requestItem.itemId,
+              itemName: requestItem.itemName,
+              categoryName: requestItem.categoryName,
+              requestedQty,
+              centralReservedQty,
+              purchaseRequiredQty,
+              orderQty,
+              expectedQty: requestedQty,
+              estimatedUnitPrice,
+              includeInPdf: purchaseItem.includeInPdf !== false
+            };
+          });
+          const orderLog = {
+            id: uuidv4(),
+            idempotencyKey,
+            purchaseRunId: run.id,
+            requestId: request.id,
+            branchId: request.branchId,
+            weekStartDate: request.weekStartDate,
+            revision: expectedVersion,
+            status: "ORDERED",
+            orderedAt: nowIso,
+            orderedBy: req.user?.id || "",
+            estimatedTotal: orderItems.reduce((sum, item) => sum + item.orderQty * item.estimatedUnitPrice, 0),
+            items: orderItems
+          };
+          await orderLogs.insertOne(orderLog, { session });
+
+          let distributionRun = await repository.distributionRuns().findOne({ requestId: request.id }, { session });
+          if (!distributionRun) {
+            distributionRun = {
+              id: uuidv4(),
+              requestId: request.id,
+              branchId: request.branchId,
+              weekStartDate: request.weekStartDate,
+              combinedRunId: run.id,
+              orderLogId: orderLog.id,
+              status: "AWAITING_RECEIPT",
+              version: 0,
+              createdAt: nowIso
+            };
+            await repository.distributionRuns().insertOne(distributionRun, { session });
+            const distributionItems = orderItems.map((item) => ({
+              id: uuidv4(),
+              runId: distributionRun.id,
+              requestId: request.id,
+              branchId: request.branchId,
+              itemId: item.itemId,
+              itemName: item.itemName,
+              categoryName: item.categoryName,
+              requestedQty: item.requestedQty,
+              centralReservedQty: item.centralReservedQty,
+              orderedQty: item.orderQty,
+              actualPurchaseQty: item.orderQty,
+              expectedQty: item.requestedQty,
+              approvedQty: item.requestedQty,
+              receiptDefaultQty: item.requestedQty,
+              deliveredQty: null,
+              estimatedUnitPrice: item.estimatedUnitPrice,
+              unitPrice: item.estimatedUnitPrice,
+              paymentStatus: item.orderQty > 0 ? "NOT_RECORDED" : "NOT_APPLICABLE",
+              mismatchReason: "",
+              status: item.requestedQty > 0 ? "AVAILABLE" : "UNAVAILABLE"
+            }));
+            if (distributionItems.length) {
+              await repository.distributionItems().insertMany(distributionItems, { session });
+            }
+          }
+
+          const runResult = await repository.combinedPurchaseRuns().updateOne(
+            { id: run.id, status: "DRAFT", $or: [{ version: expectedVersion }, ...(expectedVersion === 0 ? [{ version: { $exists: false } }] : [])] },
+            { $set: { status: "ORDERED", orderedAt: nowIso, orderedBy: req.user?.id || "", orderLogId: orderLog.id, updatedAt: nowIso }, $inc: { version: 1 } },
+            { session }
+          );
+          if (runResult.modifiedCount !== 1) {
+            throw Object.assign(new Error("This purchase changed elsewhere. Reload and try again."), { status: 409 });
+          }
+          await repository.weeklyRequests().updateOne(
+            { id: request.id, status: "SUBMITTED" },
+            { $set: { status: "AWAITING_RECEIPT", updatedAt: nowIso } },
+            { session }
+          );
+          const centralItems = orderItems.map((item) => ({
+            itemId: item.itemId,
+            itemName: item.itemName,
+            orderedQty: item.orderQty,
+            actualPurchaseQty: item.orderQty,
+            orderedEstimatedUnitPrice: item.estimatedUnitPrice,
+            finalUnitPrice: item.estimatedUnitPrice,
+            purchaseAmount: Number((item.orderQty * item.estimatedUnitPrice).toFixed(2)),
+            paymentStatus: item.orderQty > 0 ? "NOT_RECORDED" : "NOT_APPLICABLE",
+            paymentMethod: ""
+          }));
+          await upsertWeeklyCentralPurchaseLog(repository.weeklyCentralPurchaseLogs(), request.weekStartDate, {
+            branchId: request.branchId,
+            requestId: request.id,
+            requestCreatedAt: request.createdAt || request.submittedAt || "",
+            purchaseRunId: run.id,
+            distributionRunId: distributionRun.id,
+            orderLogId: orderLog.id,
+            status: "ORDERED",
+            distributionStatus: distributionRun.status,
+            orderedAt: nowIso,
+            orderedQty: centralItems.reduce((sum, item) => sum + item.orderedQty, 0),
+            purchasedQty: centralItems.reduce((sum, item) => sum + item.actualPurchaseQty, 0),
+            purchaseAmount: centralItems.reduce((sum, item) => sum + item.purchaseAmount, 0),
+            paidAmount: 0,
+            pendingAmount: 0,
+            cashPaid: 0,
+            upiPaid: 0,
+            items: centralItems
+          }, { session });
+          response = { ok: true, replayed: false, order: orderLog, distributionRunId: distributionRun.id };
+        });
+        res.json(response);
+      } catch (error) {
+        if (error?.code === 11000) {
+          const existing = await repository.weeklyPurchaseOrderLogs().findOne({ purchaseRunId: req.params.runId });
+          if (existing) return res.json({ ok: true, replayed: true, order: existing });
+        }
+        sendServiceError(res, error);
+      } finally {
+        await session.endSession();
+      }
+    }
   };
 }
