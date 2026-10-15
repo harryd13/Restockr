@@ -1,0 +1,8 @@
+@media (min-width:851px) {
+  .topnav { gap:10px; }
+  .topnav__left { overflow:visible; scrollbar-width:none; }
+  .topnav__left::-webkit-scrollbar { display:none; }
+  .topnav .tabs { width:max-content; min-width:100%; gap:2px; }
+  .topnav .tab { min-height:40px; padding:0 7px; font-size:10px; }
+  .topnav .tab--active::after { right:7px; left:7px; }
+}

@@ -65,6 +65,7 @@ export function registerRequestHistoryRoutesController(context) {
         categoryName: row.categoryName,
         requestedQty: row.requestedQty,
         approvedQty,
+        branchReportedQty: receiptVerified ? Number(distRow?.branchReportedQty ?? distRow?.deliveredQty ?? distRow?.approvedQty ?? 0) : null,
         deliveredQty,
         mismatchReason: distRow?.mismatchReason || "",
         unitPrice: row.unitPrice || 0,
@@ -82,6 +83,5 @@ export function registerRequestHistoryRoutesController(context) {
     });
   });
 }
-
 
 

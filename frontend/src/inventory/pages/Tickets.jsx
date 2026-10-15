@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
-import Modal from "../components/Modal";
+import Modal from "../../shared/components/Modal";
 
 const ASSIGNEES = ["Vivek", "Harman", "Bhashit"];
 const PAYMENT_METHODS = ["UPI", "Cash", "Paid by assignee"];
@@ -105,6 +105,7 @@ function Tickets({ reportStartDate = "", reportRefreshKey = 0 }) {
   };
 
   const lookupBranchName = (id) => {
+    if (id === "CENTRAL") return "Central Inventory";
     const name = branches.find((b) => b.id === id)?.name || id;
     return name.replace(/^foffee\s+/i, "");
   };

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
-import Modal from "../components/Modal";
+import Modal from "../../shared/components/Modal";
 
 function OpsPurchaseRun() {
   const [week, setWeek] = useState("");

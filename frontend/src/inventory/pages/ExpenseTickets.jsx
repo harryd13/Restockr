@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
-import Modal from "../components/Modal";
+import Modal from "../../shared/components/Modal";
 
 const CATEGORIES = ["Rent", "Electricity Bill", "Salary", "Food Expense", "Ice Cream", "Other", "Purchase"];
 const ASSIGNEES = ["Vivek", "Harman", "Bhashit"];

@@ -143,7 +143,7 @@ function BranchRequests({ allowWeeklyOverride = false }) {
       ...prev,
       [requestId]: Object.fromEntries((res.data.items || []).map((item) => [
         item.itemId,
-        res.data.receiptVerified ? Number(item.deliveredQty || 0) : Number(item.approvedQty || 0)
+        res.data.receiptVerified ? Number(item.branchReportedQty ?? item.deliveredQty ?? 0) : Number(item.requestedQty || 0)
       ]))
     }));
   };
@@ -401,14 +401,16 @@ function BranchRequests({ allowWeeklyOverride = false }) {
                                   <th>Item</th>
                                   <th>Category</th>
                                   <th>Requested</th>
-                                  <th>Received</th>
+                                  <th>Branch received</th>
+                                  <th>Final received</th>
+                                  <th>Review</th>
                                 </tr>
                               </thead>
                               <tbody>
                                 {itemsForHistory.map((item) => {
                                   const receivedQty = receiptState.receiptVerified
-                                    ? Number(item.deliveredQty || 0)
-                                    : Number(quantitiesForRequest[item.itemId] ?? item.approvedQty ?? 0);
+                                    ? Number(item.branchReportedQty ?? item.deliveredQty ?? 0)
+                                    : Number(quantitiesForRequest[item.itemId] ?? item.requestedQty ?? 0);
                                   const isUndistributed = receiptState.receiptVerified && receivedQty !== Number(item.requestedQty || 0);
                                   return (
                                     <tr key={`${h.id}-${item.itemId}`} className={isUndistributed ? "row-unavailable" : ""}>
@@ -430,6 +432,18 @@ function BranchRequests({ allowWeeklyOverride = false }) {
                                             <button type="button" className="btn btn-primary" onClick={() => changeReceivedQty(h.id, item.itemId, receivedQty + 1)}>+</button>
                                           </div>
                                         ) : receiptState.receiptVerified ? receivedQty : "Waiting for purchase"}
+                                      </td>
+                                      <td>
+                                        {receiptState.receiptVerified
+                                          ? Number(item.deliveredQty || 0)
+                                          : "Pending verification"}
+                                      </td>
+                                      <td>
+                                        {receiptState.distributionStatus === "FINALIZED"
+                                          ? item.mismatchReason || "Matched"
+                                          : receiptState.receiptVerified
+                                            ? "Waiting for admin review"
+                                            : "—"}
                                       </td>
                                     </tr>
                                   );

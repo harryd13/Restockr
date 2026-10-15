@@ -1,5 +1,5 @@
 {
-  "restockrVersion": "3.26.1",
+  "restockrVersion": "10.26.1",
   "dependencies": {
     "mongodb": "^7.0.0"
   }

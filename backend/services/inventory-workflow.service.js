@@ -1,4 +1,4 @@
-export function createInventoryWorkflowService({ getDb, COLLECTIONS, uuidv4, startOfWeek }) {
+export function createInventoryWorkflowService({ getDb, getClient, COLLECTIONS, uuidv4, startOfWeek }) {
   const db = { collection: (...args) => getDb().collection(...args) };
 
   async function getCentralInventoryMap(itemIds) {
@@ -18,6 +18,92 @@ export function createInventoryWorkflowService({ getDb, COLLECTIONS, uuidv4, sta
       { upsert: true }
     );
   }
+
+  async function reserveInventory(itemId, quantity, { session } = {}) {
+    const qty = Number(quantity || 0);
+    if (!itemId || qty <= 0) return 0;
+    const inventory = db.collection(COLLECTIONS.CENTRAL_INVENTORY);
+    const row = await inventory.findOne({ itemId }, { session });
+    const onHand = Number(row?.onHand || 0);
+    const reserved = Number(row?.reserved || 0);
+    const allocated = Math.min(qty, Math.max(0, onHand - reserved));
+    if (!allocated) return 0;
+    const result = await inventory.updateOne(
+      { itemId, $expr: { $gte: [{ $subtract: [{ $ifNull: ["$onHand", 0] }, { $ifNull: ["$reserved", 0] }] }, allocated] } },
+      { $inc: { reserved: allocated }, $set: { updatedAt: new Date().toISOString() } },
+      { session }
+    );
+    if (result.modifiedCount !== 1) {
+      throw Object.assign(new Error("Inventory reservation changed concurrently. Please retry."), { status: 409 });
+    }
+    return allocated;
+  }
+
+  async function releaseInventory(itemId, quantity, { session } = {}) {
+    const qty = Number(quantity || 0);
+    if (!itemId || qty <= 0) return 0;
+    const inventory = db.collection(COLLECTIONS.CENTRAL_INVENTORY);
+    const row = await inventory.findOne({ itemId }, { session });
+    const released = Math.min(qty, Number(row?.reserved || 0));
+    if (!released) return 0;
+    await inventory.updateOne(
+      { itemId },
+      { $inc: { reserved: -released }, $set: { updatedAt: new Date().toISOString() } },
+      { session }
+    );
+    return released;
+  }
+
+  async function commitReservation(itemId, quantity, { session } = {}) {
+    const qty = Number(quantity || 0);
+    if (!itemId || qty <= 0) return 0;
+    const inventory = db.collection(COLLECTIONS.CENTRAL_INVENTORY);
+    const row = await inventory.findOne({ itemId }, { session });
+    const committed = Math.min(qty, Number(row?.reserved || 0), Number(row?.onHand || 0));
+    if (!committed) return 0;
+    await inventory.updateOne(
+      { itemId, onHand: { $gte: committed }, reserved: { $gte: committed } },
+      { $inc: { onHand: -committed, reserved: -committed }, $set: { updatedAt: new Date().toISOString() } },
+      { session }
+    );
+    return committed;
+  }
+
+  async function submitWeeklyRequestWithReservations(requestId) {
+    const session = getClient().startSession();
+    let submittedRequest;
+    try {
+      await session.withTransaction(async () => {
+        const requestsCol = db.collection(COLLECTIONS.WEEKLY_REQUESTS);
+        const reqItemsCol = db.collection(COLLECTIONS.WEEKLY_REQUEST_ITEMS);
+        const request = await requestsCol.findOne({ id: requestId }, { session });
+        if (!request || request.status !== "DRAFT") {
+          throw Object.assign(new Error("Only draft can be submitted"), { status: 400 });
+        }
+        const items = await reqItemsCol.find({ requestId }, { session }).toArray();
+        if (!items.length) throw Object.assign(new Error("Cannot submit an empty request"), { status: 400 });
+        const submittedAt = new Date().toISOString();
+        for (const item of items) {
+          const requestedQty = Number(item.requestedQty || 0);
+          const centralReservedQty = await reserveInventory(item.itemId, requestedQty, { session });
+          await reqItemsCol.updateOne(
+            { id: item.id, requestId },
+            { $set: { centralReservedQty, purchaseRequiredQty: Math.max(0, requestedQty - centralReservedQty) } },
+            { session }
+          );
+        }
+        await requestsCol.updateOne(
+          { id: requestId, status: "DRAFT" },
+          { $set: { status: "SUBMITTED", submittedAt, updatedAt: submittedAt } },
+          { session }
+        );
+        submittedRequest = { ...request, status: "SUBMITTED", submittedAt, updatedAt: submittedAt };
+      });
+      return submittedRequest;
+    } finally {
+      await session.endSession();
+    }
+  }
   
   async function createCombinedPurchaseRunForRequest(requestId) {
     const runsCol = db.collection(COLLECTIONS.COMBINED_PURCHASE_RUNS);
@@ -33,7 +119,7 @@ export function createInventoryWorkflowService({ getDb, COLLECTIONS, uuidv4, sta
     const targetWeek = targetReq?.weekStartDate || startOfWeek();
     const pendingReqs = await requestsCol
       .find({ status: "SUBMITTED", weekStartDate: targetWeek })
-      .sort({ createdAt: 1 })
+      .sort({ submittedAt: 1, createdAt: 1 })
       .toArray();
     if (!pendingReqs.length) return null;
   
@@ -75,13 +161,11 @@ export function createInventoryWorkflowService({ getDb, COLLECTIONS, uuidv4, sta
     });
   
     const itemIds = Array.from(new Set(allReqItems.map((r) => r.itemId)));
-    const inventoryMap = await getCentralInventoryMap(itemIds);
     const masterItems = await masterItemsCol.find({ id: { $in: itemIds } }).toArray();
     const masterMap = new Map(masterItems.map((it) => [it.id, it]));
     const categories = await categoriesCol.find({}).toArray();
     const categoryMap = new Map(categories.map((c) => [c.id, c.name]));
   
-    const remainingMap = new Map(inventoryMap);
     const shortfallByRequest = new Map();
   
     for (const pendingReq of pendingReqs) {
@@ -89,11 +173,9 @@ export function createInventoryWorkflowService({ getDb, COLLECTIONS, uuidv4, sta
       const shortfallMap = new Map();
       for (const row of reqItems) {
         const requestedQty = Number(row.requestedQty || 0);
-        const onHand = remainingMap.get(row.itemId) || 0;
-        const allocated = Math.min(requestedQty, onHand);
-        const shortfall = Math.max(0, requestedQty - allocated);
+        const allocated = Number(row.centralReservedQty || 0);
+        const shortfall = Number(row.purchaseRequiredQty ?? Math.max(0, requestedQty - allocated));
         if (shortfall > 0) shortfallMap.set(row.itemId, shortfall);
-        remainingMap.set(row.itemId, onHand - allocated);
       }
       shortfallByRequest.set(pendingReq.id, shortfallMap);
     }
@@ -102,10 +184,12 @@ export function createInventoryWorkflowService({ getDb, COLLECTIONS, uuidv4, sta
       const run = runMap.get(pendingReq.id);
       if (!run || run.status !== "DRAFT") continue;
       const reqItems = itemsByReqId.get(pendingReq.id) || [];
+      const reqItemByItemId = new Map(reqItems.map((item) => [item.itemId, item]));
       const shortfallMap = shortfallByRequest.get(pendingReq.id) || new Map();
       const autoItems = [];
       for (const [itemId, shortfall] of shortfallMap.entries()) {
         const item = masterMap.get(itemId);
+        const requestItem = reqItemByItemId.get(itemId);
         if (!item) continue;
         autoItems.push({
           id: uuidv4(),
@@ -113,18 +197,44 @@ export function createInventoryWorkflowService({ getDb, COLLECTIONS, uuidv4, sta
           itemId,
           itemName: item.name,
           categoryName: categoryMap.get(item.categoryId) || "",
+          requestedQty: Number(requestItem?.requestedQty || 0),
+          centralReservedQty: Number(requestItem?.centralReservedQty || 0),
+          purchaseRequiredQty: shortfall,
           requestedTotal: shortfall,
+          orderQty: shortfall,
           approvedQty: shortfall,
+          estimatedUnitPrice: item.defaultPrice || 0,
           unitPrice: item.defaultPrice || 0,
+          includeInPdf: true,
           status: "AVAILABLE",
           manual: false,
           createdAt: new Date().toISOString()
         });
       }
   
-      await itemsCol.deleteMany({ runId: run.id, manual: { $ne: true } });
-      if (autoItems.length) {
-        await itemsCol.insertMany(autoItems);
+      const existingItems = await itemsCol.find({ runId: run.id }).toArray();
+      const autoItemIds = new Set(autoItems.map((item) => item.itemId));
+      await itemsCol.deleteMany({ runId: run.id, manual: { $ne: true }, itemId: { $nin: Array.from(autoItemIds) } });
+      for (const autoItem of autoItems) {
+        const existing = existingItems.find((item) => item.itemId === autoItem.itemId);
+        if (existing?.manual) {
+          await itemsCol.updateOne(
+            { id: existing.id, runId: run.id },
+            { $set: {
+              requestedQty: autoItem.requestedQty,
+              centralReservedQty: autoItem.centralReservedQty,
+              purchaseRequiredQty: autoItem.purchaseRequiredQty,
+              requestedTotal: autoItem.requestedTotal,
+              updatedAt: new Date().toISOString()
+            } }
+          );
+        } else {
+          await itemsCol.updateOne(
+            { runId: run.id, itemId: autoItem.itemId },
+            { $set: autoItem },
+            { upsert: true }
+          );
+        }
       }
       await runsCol.updateOne({ id: run.id }, { $set: { updatedAt: new Date().toISOString() } });
   
@@ -155,6 +265,7 @@ export function createInventoryWorkflowService({ getDb, COLLECTIONS, uuidv4, sta
               categoryName: row.categoryName,
               requestedQty: row.requestedQty,
               approvedQty: receiptDefaultQty,
+              centralReservedQty: receiptDefaultQty,
               receiptDefaultQty,
               deliveredQty: null,
               mismatchReason: "",
@@ -167,6 +278,10 @@ export function createInventoryWorkflowService({ getDb, COLLECTIONS, uuidv4, sta
             await distItemsCol.insertMany(distItems);
           }
         }
+        await runsCol.updateOne(
+          { id: run.id, status: "DRAFT" },
+          { $set: { status: "FULFILLED_FROM_STOCK", updatedAt: new Date().toISOString() } }
+        );
       }
     }
   
@@ -174,5 +289,13 @@ export function createInventoryWorkflowService({ getDb, COLLECTIONS, uuidv4, sta
   }
   
   
-  return { getCentralInventoryMap, upsertCentralInventory, createCombinedPurchaseRunForRequest };
+  return {
+    getCentralInventoryMap,
+    upsertCentralInventory,
+    reserveInventory,
+    releaseInventory,
+    commitReservation,
+    submitWeeklyRequestWithReservations,
+    createCombinedPurchaseRunForRequest
+  };
 }

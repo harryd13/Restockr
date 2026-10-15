@@ -1,0 +1,12 @@
+.branch-home__payment-option { min-height:98px; display:grid; place-items:center; gap:6px; padding:0; text-align:center; }
+.branch-home__payment-option img { width:66px; height:48px; }
+.branch-home__empty img { width:250px; height:150px; margin:-18px 0 -8px; }
+.branch-home__payment-option img { filter:none; }
+.branch-home__amount b { color:#e9694d; background:#fff5f0; }
+.branch-home__history-item { border-color:#f3ded6; background:#fffaf8; }
+.branch-home__edit { padding:9px 16px; border:0; border-radius:12px; background:#fff0e9; color:#d95b3d; font-weight:700; cursor:pointer; }
+.branch-home__delete { padding:9px 12px; border:0; background:transparent; color:#d95b3d; font-weight:700; cursor:pointer; }
+.branch-home__pagination { display:flex; justify-content:flex-end; gap:8px; margin-top:14px; }
+.branch-home__page-button { display:grid; place-items:center; width:35px; height:35px; border:1px solid #ffc0ac; border-radius:9px; color:#d95b3d; background:#fff7f3; font-size:24px; line-height:1; cursor:pointer; }
+.branch-home__page-button:disabled { opacity:.42; cursor:not-allowed; }
+@media (max-width:760px) { .branch-home__payment-option { min-height:76px; gap:4px; font-size:11px; }.branch-home__payment-option img { width:48px; height:34px; }.branch-home__empty img { width:180px; height:110px; margin:-12px 0 -5px; } }

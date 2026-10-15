@@ -23,8 +23,12 @@ export const COLLECTIONS = {
   DISTRIBUTION_ITEMS: "distributionItems",
   DISTRIBUTION_RECEIPTS: "distributionReceipts",
   DISTRIBUTION_RECONCILIATIONS: "distributionReconciliations",
+  INVENTORY_COMMITMENT_LOGS: "inventoryCommitmentLogs",
+  WEEKLY_CENTRAL_PURCHASE_LOGS: "weeklyCentralPurchaseLogs",
+  WEEKLY_DISTRIBUTION_LOGS: "weeklyDistributionLogs",
   UNFULFILLED_LOGS: "unfulfilledLogs",
   COMBINED_PURCHASE_LOGS: "combinedPurchaseLogs",
+  WEEKLY_PURCHASE_ORDER_LOGS: "weeklyPurchaseOrderLogs",
   TICKETS: "tickets",
   TICKET_ITEMS: "ticketItems",
   EXPENSE_LOGS: "expenseLogs",
@@ -34,7 +38,8 @@ export const COLLECTIONS = {
   CASH_REPORTS: "cashReports",
   DUE_CLEARANCE_LOGS: "dueClearanceLogs",
   SETTINGS: "settings",
-  MANUAL_ADJUSTMENTS: "manualInventoryAdjustments"
+  MANUAL_ADJUSTMENTS: "manualInventoryAdjustments",
+  CENTRAL_PROCUREMENTS: "centralProcurements"
 };
 
 export const DAILY_MENTIONS = {

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import axios from "axios";
-import Modal from "../components/Modal";
+import Modal from "../../shared/components/Modal";
 
 function AdminTools({ reportStartDate, onRefresh, allowWeeklyOverride, onWeeklyOverrideChange }) {
   const [date, setDate] = useState(reportStartDate || "");

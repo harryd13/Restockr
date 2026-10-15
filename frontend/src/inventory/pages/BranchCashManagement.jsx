@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
-import Modal from "../components/Modal";
+import Modal from "../../shared/components/Modal";
 
 const INITIAL_FORM = {
   onlineSales: "",

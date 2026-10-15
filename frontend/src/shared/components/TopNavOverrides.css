@@ -1,0 +1,5 @@
+.topnav__meta { border-left:0; padding-left:0; gap:0; }
+.topnav__identity { margin-right:-18px; }
+.topnav__meta .btn { min-height:38px; margin-left:14px; padding:0 14px; border-left:1px solid #d8e0f0; }
+@media (min-width:851px) and (max-width:1120px) { .topnav__identity { margin-right:0; }.topnav__meta .btn { margin-left:10px; padding:0 10px; } }
+@media (max-width:850px) { .topnav__identity { margin-right:0; } }

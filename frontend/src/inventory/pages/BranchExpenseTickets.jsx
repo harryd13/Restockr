@@ -1,12 +1,14 @@
 import React, { useEffect, useMemo, useState } from "react";
 import axios from "axios";
-import Modal from "../components/Modal";
+import Modal from "../../shared/components/Modal";
+import "./BranchExpenseTickets.css";
+import "./BranchExpenseTicketsOverrides.css";
 
 const ITEM_SUGGESTIONS = ["Milk", "Pizza Bread", "Garlic Bread", "Ice Cubes"];
 const PAYMENT_METHODS = [
-  { label: "Cash", value: "Cash" },
-  { label: "UPI", value: "UPI" },
-  { label: "Self", value: "Paid by assignee" }
+  { label: "Cash", value: "Cash", icon: "/home-branch-assets/cash.png" },
+  { label: "UPI", value: "UPI", icon: "/home-branch-assets/upi.png" },
+  { label: "Self", value: "Paid by assignee", icon: "/home-branch-assets/self.png" }
 ];
 
 const getTodayIso = () => new Date().toISOString().slice(0, 10);
@@ -188,7 +190,7 @@ function BranchExpenseTickets() {
     loadHistory(getTodayIso());
   }, []);
 
-  const historyPageSize = 5;
+  const historyPageSize = 3;
   const historyTotalPages = Math.max(1, Math.ceil(historyLogs.length / historyPageSize));
   const historyStartIndex = (historyPage - 1) * historyPageSize;
   const pagedHistory = historyLogs.slice(historyStartIndex, historyStartIndex + historyPageSize);
@@ -241,7 +243,11 @@ function BranchExpenseTickets() {
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }} onKeyDown={handleKeyDown}>
+    <div className="branch-home" onKeyDown={handleKeyDown}>
+      <header className="branch-home__heading">
+        <h1>Branch home</h1>
+        <p>Log expenses and review today&apos;s tickets.</p>
+      </header>
       {errorBanner && (
         <div className="banner banner--warning">
           <strong>Warning:</strong> {errorBanner}
@@ -253,19 +259,16 @@ function BranchExpenseTickets() {
         </div>
       )}
 
-      <section
-        className="section-card expense-form"
-        style={{ maxWidth: 540, width: "100%" }}
-        onKeyDownCapture={handleKeyDown}
-      >
-        <h3 className="section-title">Expense Ticket</h3>
-        <p className="muted-text">Log branch expenses with quick item suggestions.</p>
+      <div className="branch-home__grid">
+      <section className="branch-home__card expense-form" onKeyDownCapture={handleKeyDown}>
+        <h2>New expense</h2>
+        <p>Record a purchase for your branch.</p>
 
-        <div style={{ display: "grid", gap: "0.75rem", marginTop: "1rem" }}>
+        <div className="branch-home__form-fields">
           {items.map((row, index) => (
-            <div key={`item-${index}`} style={{ display: "grid", gap: "0.5rem" }}>
+            <div key={`item-${index}`} className="branch-home__item-row">
               <label>
-                <span className="muted-text field-label">Item</span>
+                <span>Item</span>
                 <input
                   className="input"
                   list="branch-expense-suggestions"
@@ -275,7 +278,7 @@ function BranchExpenseTickets() {
                 />
               </label>
               <label>
-                <span className="muted-text field-label">Quantity</span>
+                <span>Quantity</span>
                 <input
                   className="input"
                   type="number"
@@ -285,7 +288,7 @@ function BranchExpenseTickets() {
                 />
               </label>
               {items.length > 1 && (
-                <button type="button" className="btn btn-ghost" onClick={() => removeItem(index)}>
+                <button type="button" className="branch-home__remove" onClick={() => removeItem(index)}>
                   Remove item
                 </button>
               )}
@@ -297,24 +300,24 @@ function BranchExpenseTickets() {
             ))}
           </datalist>
 
-          <button type="button" className="btn btn-secondary" onClick={addItem}>
-            Add another item
+          <button type="button" className="branch-home__add-item" onClick={addItem}>
+            <span>+</span> Add another item
           </button>
 
-          <label>
-            <span className="muted-text field-label">Payment Method</span>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+          <label className="branch-home__payment">
+            <span>Payment method</span>
+            <div>
               {PAYMENT_METHODS.map((method) => (
                 <button
                   key={method.value}
                   type="button"
-                  className={paymentMethod === method.value ? "btn btn-primary" : "btn btn-secondary"}
+                  className={paymentMethod === method.value ? "branch-home__payment-option branch-home__payment-option--active" : "branch-home__payment-option"}
                   onClick={() => {
                     setPaymentMethod(method.value);
                     setShowPaymentHint(false);
                   }}
                 >
-                  {method.label}
+                  <img src={method.icon} alt="" />{method.label}
                 </button>
               ))}
             </div>
@@ -323,45 +326,40 @@ function BranchExpenseTickets() {
             )}
           </label>
 
-          <label>
-            <span className="muted-text field-label">Amount</span>
-            <input className="input" type="number" min={0} value={amount} onChange={(e) => setAmount(e.target.value)} />
+          <label className="branch-home__amount">
+            <span>Total amount</span>
+            <div><b>₹</b><input className="input" type="number" min={0} value={amount} placeholder="0.00" onChange={(e) => setAmount(e.target.value)} /></div>
           </label>
         </div>
 
-        <div style={{ marginTop: "1rem", display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
-          <button className="btn btn-primary" type="button" onClick={submit} disabled={isSubmitting}>
-            {isSubmitting ? "Saving..." : "Submit Ticket"}
+        <div className="branch-home__actions">
+          <button className="branch-home__submit" type="button" onClick={submit} disabled={isSubmitting}>
+            {isSubmitting ? "Saving..." : <>Submit ticket <span>→</span></>}
           </button>
           {hasItemInput && (
-            <button className="btn btn-ghost" type="button" onClick={clearForm} disabled={isSubmitting}>
+            <button className="branch-home__cancel" type="button" onClick={clearForm} disabled={isSubmitting}>
               Cancel
             </button>
           )}
         </div>
       </section>
 
-      <section className="section-card" style={{ maxWidth: 540, width: "100%" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <section className="branch-home__card branch-home__history">
+        <div className="branch-home__history-header">
           <div>
-            <h4 className="section-title">Today&apos;s Expenses</h4>
-            <p className="muted-text">History of submitted expense tickets.</p>
+            <h2>Today&apos;s expenses</h2>
+            <p>Submitted expense tickets for today.</p>
           </div>
-          <button className="btn btn-secondary" type="button" onClick={() => loadHistory(getTodayIso())}>
-            Refresh
+          <button className="branch-home__refresh" type="button" onClick={() => loadHistory(getTodayIso())}>
+            ↻ <span>Refresh</span>
           </button>
         </div>
-        {historyLogs.length === 0 && <p className="muted-text" style={{ marginTop: "0.75rem" }}>No expenses logged today.</p>}
-        <div style={{ marginTop: "1rem", display: "grid", gap: "0.75rem" }}>
+        {historyLogs.length === 0 && <div className="branch-home__empty"><img src="/home-branch-assets/slip.png" alt="" /><strong>No expenses yet</strong><p>Your submitted tickets will appear here.</p></div>}
+        <div className="branch-home__history-list">
           {pagedHistory.map((log) => (
             <div
               key={log.id}
-              style={{
-                border: "1px solid #e2e8f0",
-                borderRadius: "1rem",
-                padding: "0.75rem 1rem",
-                background: "#f8fafc"
-              }}
+              className="branch-home__history-item"
             >
               <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 600 }}>
                 <span>{log.date}</span>
@@ -377,10 +375,10 @@ function BranchExpenseTickets() {
               </div>
               {isEditable(log) && (
                 <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.75rem" }}>
-                  <button type="button" className="btn btn-secondary" onClick={() => openEditModal(log)}>
+                  <button type="button" className="branch-home__edit" onClick={() => openEditModal(log)}>
                     Edit
                   </button>
-                  <button type="button" className="btn btn-ghost" onClick={() => openDeleteModal(log)}>
+                  <button type="button" className="branch-home__delete" onClick={() => openDeleteModal(log)}>
                     Delete
                   </button>
                 </div>
@@ -389,26 +387,29 @@ function BranchExpenseTickets() {
           ))}
         </div>
         {historyLogs.length > historyPageSize && (
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem", marginTop: "0.75rem" }}>
+          <div className="branch-home__pagination">
             <button
               type="button"
-              className="btn btn-secondary"
+              className="branch-home__page-button"
               onClick={() => setHistoryPage((prev) => Math.max(1, prev - 1))}
               disabled={historyPage === 1}
+              aria-label="Previous page"
             >
-              Prev
+              ‹
             </button>
             <button
               type="button"
-              className="btn btn-secondary"
+              className="branch-home__page-button"
               onClick={() => setHistoryPage((prev) => Math.min(historyTotalPages, prev + 1))}
               disabled={historyPage === historyTotalPages}
+              aria-label="Next page"
             >
-              Next
+              ›
             </button>
           </div>
         )}
       </section>
+      </div>
 
       <Modal
         open={!!editTicket}

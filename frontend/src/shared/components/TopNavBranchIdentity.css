@@ -1,0 +1,2 @@
+.topnav__user--branch > div { display:none; }
+.topnav__user--branch span { display:block; font-size:11px; font-weight:700; letter-spacing:.015em; }
